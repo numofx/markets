@@ -1,26 +1,35 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f6f3ee;
+  --foreground: #1f1b16;
+  --numo-cream: #f6f3ee;
+  --numo-sand: #ece7df;
+  --numo-card: #fdfbf8;
+  --numo-ink: #1f1b16;
+  --numo-muted: #8b8177;
+  --numo-border: #e3ddd4;
+  --numo-pill: #f1ede7;
+  --numo-accent: #2f6f5e;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-numo-cream: var(--numo-cream);
+  --color-numo-sand: var(--numo-sand);
+  --color-numo-card: var(--numo-card);
+  --color-numo-ink: var(--numo-ink);
+  --color-numo-muted: var(--numo-muted);
+  --color-numo-border: var(--numo-border);
+  --color-numo-pill: var(--numo-pill);
+  --color-numo-accent: var(--numo-accent);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--numo-cream);
+  color: var(--numo-ink);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
