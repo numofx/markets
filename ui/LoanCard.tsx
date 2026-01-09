@@ -2,6 +2,7 @@
 
 import { ChevronLeft, Info } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { AssetSelect } from "@/ui/AssetSelect";
 import { PillTabs } from "@/ui/PillTabs";
 import { TokenSelect } from "@/ui/TokenSelect";
 
@@ -31,7 +32,12 @@ export function LoanCard({ className }: LoanCardProps) {
             placeholder="0"
             type="text"
           />
-          <TokenSelect label="USDC" symbol="U" />
+          <AssetSelect
+            options={[
+              { code: "USD", flagSrc: "/flags/us.svg", name: "US Dollar" },
+              { code: "KES", flagSrc: "/flags/ke.svg", name: "Kenyan Shilling" },
+            ]}
+          />
         </div>
         <div className="mt-2 text-numo-muted text-xs">$0.00</div>
       </div>
@@ -46,7 +52,12 @@ export function LoanCard({ className }: LoanCardProps) {
             placeholder="0"
             type="text"
           />
-          <TokenSelect label="WBTC" symbol="W" />
+          <AssetSelect
+            options={[
+              { code: "USD", flagSrc: "/flags/us.svg", name: "US Dollar" },
+              { code: "KES", flagSrc: "/flags/ke.svg", name: "Kenyan Shilling" },
+            ]}
+          />
         </div>
         <div className="mt-2 flex items-center justify-between text-numo-muted text-xs">
           <span>$0.00</span>
