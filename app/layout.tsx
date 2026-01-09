@@ -19,6 +19,15 @@ export async function generateMetadata(): Promise<Metadata> {
 
   return {
     description: t("description"),
+    icons: {
+      apple: [{ sizes: "180x180", type: "image/png", url: "/apple-touch-icon.png" }],
+      icon: [
+        { sizes: "32x32", type: "image/png", url: "/favicon-32x32.png" },
+        { sizes: "16x16", type: "image/png", url: "/favicon-16x16.png" },
+        { url: "/favicon.ico" },
+      ],
+    },
+    manifest: "/site.webmanifest",
     title: t("title"),
   };
 }
