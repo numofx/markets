@@ -1,12 +1,12 @@
 "use client";
 
 import { Check, ChevronDown } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import { cn } from "@/lib/cn";
 
 type AssetOption = {
-  code: "USD" | "KES";
+  code: string;
   name: string;
   flagSrc: string;
 };
@@ -21,6 +21,10 @@ type AssetSelectProps = {
 export function AssetSelect({ options, value, onChange, className }: AssetSelectProps) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<AssetOption["code"]>(value ?? options[0].code);
+
+  useEffect(() => {
+    if (value !== undefined) setSelected(value);
+  }, [value]);
 
   const active = options.find((option) => option.code === selected) ?? options[0];
 

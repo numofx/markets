@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
 
 type PillTabsProps = {
   tabs: string[];
   defaultValue?: string;
+  value?: string;
   size?: "sm" | "md";
   className?: string;
   onChange?: (value: string) => void;
@@ -14,11 +15,40 @@ type PillTabsProps = {
 export function PillTabs({
   tabs,
   defaultValue,
+  value,
   size = "md",
   className,
   onChange,
 }: PillTabsProps) {
-  const [activeTab, setActiveTab] = useState(defaultValue ?? tabs[0]);
+  const isControlled = typeof value !== "undefined";
+  const tabsKey = useMemo(() => tabs.join("|"), [tabs]);
+  const [activeTab, setActiveTab] = useState(value ?? defaultValue ?? tabs[0]);
+
+  useEffect(() => {
+    if (!isControlled) {
+      return;
+    }
+
+    const nextTab =
+      value !== undefined && tabs.includes(value) ? value : tabs[0];
+    setActiveTab(nextTab);
+  }, [isControlled, value, tabsKey]);
+
+  useEffect(() => {
+    if (isControlled) {
+      return;
+    }
+
+    if (activeTab && tabs.includes(activeTab)) {
+      return;
+    }
+
+    const nextTab =
+      defaultValue !== undefined && tabs.includes(defaultValue)
+        ? defaultValue
+        : tabs[0];
+    setActiveTab(nextTab);
+  }, [isControlled, activeTab, defaultValue, tabsKey]);
 
   return (
     <div
@@ -40,7 +70,9 @@ export function PillTabs({
           )}
           key={tab}
           onClick={() => {
-            setActiveTab(tab);
+            if (!isControlled) {
+              setActiveTab(tab);
+            }
             onChange?.(tab);
           }}
           role="tab"
