@@ -23,7 +23,9 @@ export function AssetSelect({ options, value, onChange, className }: AssetSelect
   const [selected, setSelected] = useState<AssetOption["code"]>(value ?? options[0].code);
 
   useEffect(() => {
-    if (value !== undefined) setSelected(value);
+    if (value !== undefined) {
+      setSelected(value);
+    }
   }, [value]);
 
   const active = options.find((option) => option.code === selected) ?? options[0];
@@ -31,7 +33,7 @@ export function AssetSelect({ options, value, onChange, className }: AssetSelect
   return (
     <div className={cn("relative", className)}>
       <button
-        className="flex items-center gap-2 rounded-full border border-numo-border bg-white px-3 py-2 font-semibold text-numo-ink text-sm shadow-sm"
+        className="flex items-center gap-2 rounded-full border border-border bg-white px-3 py-1.5 font-semibold text-numo-ink/90 text-xs shadow-none"
         onClick={() => setOpen((prev) => !prev)}
         type="button"
       >

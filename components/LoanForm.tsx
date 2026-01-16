@@ -4,7 +4,8 @@ import { useMemo, useState } from "react";
 import { ChevronLeft, Pencil } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { AssetSelect } from "@/ui/AssetSelect";
-import { SelectTermSheet, type TermOption } from "@/ui/SelectTermSheet";
+import type { TermOption } from "@/ui/SelectTermSheet";
+import { SelectTermSheet } from "@/ui/SelectTermSheet";
 
 type AssetOption = {
   code: string;
@@ -30,9 +31,9 @@ export function LoanForm({ className }: LoanFormProps) {
     [],
   );
   const [amount, setAmount] = useState("");
-  const [primaryAsset, setPrimaryAsset] = useState<AssetOption["code"]>(() => {
-    return assetOptions.find((option) => option.code === "USDC")?.code ?? assetOptions[0].code;
-  });
+  const [primaryAsset, setPrimaryAsset] = useState<AssetOption["code"]>(
+    () => assetOptions.find((option) => option.code === "USDC")?.code ?? assetOptions[0].code,
+  );
   const [secondaryAsset, setSecondaryAsset] = useState<AssetOption["code"]>(
     assetOptions[1]?.code ?? assetOptions[0].code,
   );
@@ -46,6 +47,7 @@ export function LoanForm({ className }: LoanFormProps) {
   const exposureLabel = "Receive";
 
   const amountValue = Number.parseFloat(amount);
+  const receiveAmount = amount === "" ? "0" : amount;
   const canReview =
     Number.isFinite(amountValue) &&
     amountValue > 0 &&
@@ -55,18 +57,28 @@ export function LoanForm({ className }: LoanFormProps) {
   return (
     <div
       className={cn(
-        "w-full max-w-md rounded-3xl border border-numo-border bg-numo-card p-6 shadow-sm",
+        "w-full max-w-md rounded-[32px] border border-black/5 bg-[#FAFAF8] p-6 shadow-[0_18px_60px_rgba(0,0,0,0.08)]",
         className,
       )}
     >
-      <div className="mt-6 rounded-2xl border border-numo-border bg-white p-4 shadow-sm">
-        <div className="font-semibold text-numo-muted text-xs uppercase tracking-wide">
+      <div className="mb-4 flex items-center">
+        <button
+          aria-label="Back"
+          className="flex h-10 w-10 items-center justify-center rounded-full border border-black/10 bg-black/5 text-black/50 shadow-none"
+          type="button"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="rounded-3xl border border-black/5 bg-[#F6F6F2] p-5 shadow-[0_1px_0_rgba(0,0,0,0.04)]">
+        <div className="font-medium text-[11px] text-black/60">
           Lend
         </div>
         <div className="mt-4 flex items-center justify-between gap-4">
           <input
             aria-label="Lend amount"
-            className="w-full bg-transparent font-semibold text-4xl text-numo-ink outline-none"
+            className="w-full bg-transparent font-medium text-3xl text-black/60 outline-none"
             inputMode="decimal"
             onChange={(event) => setAmount(event.target.value)}
             placeholder="0"
@@ -79,63 +91,56 @@ export function LoanForm({ className }: LoanFormProps) {
             value={primaryAsset}
           />
         </div>
-        <div className="mt-2 text-numo-muted text-xs">$0.00</div>
+        <div className="mt-2 text-black/35 text-xs">$0.00</div>
       </div>
 
-      <div className="mt-4 flex items-center justify-between rounded-2xl border border-numo-border bg-white p-4 shadow-sm">
-        <div className="font-semibold text-numo-muted text-xs uppercase tracking-wide">
+      <div className="mt-3 rounded-3xl border border-black/5 bg-[#F6F6F2] p-5 shadow-[0_1px_0_rgba(0,0,0,0.04)]">
+        <div className="font-medium text-[11px] text-black/60">
           {exposureLabel}
         </div>
-        <AssetSelect
-          onChange={setSecondaryAsset}
-          options={assetOptions}
-          value={secondaryAsset}
-        />
+        <div className="mt-4 flex items-center justify-between gap-4">
+          <div className="w-full bg-transparent font-medium text-3xl text-black/60 outline-none">
+            {receiveAmount}
+          </div>
+          <AssetSelect
+            onChange={setSecondaryAsset}
+            options={assetOptions}
+            value={secondaryAsset}
+          />
+        </div>
+        <div className="mt-2 text-black/35 text-xs">$0.00</div>
       </div>
 
-      <div className="mt-5 rounded-2xl border border-numo-border bg-white p-4 shadow-sm">
-        <div className="flex items-center justify-between">
-          <div className="font-semibold text-numo-muted text-xs uppercase tracking-wide">
-            Yield
-          </div>
-        </div>
-        <div className="mt-4 flex items-center justify-between gap-4">
-          <div>
+      <div className="mt-6 rounded-2xl bg-[#fafaf8] px-6 py-4">
+        <div className="grid gap-y-0.5">
+          <div className="text-neutral-500 text-sm leading-none">Yield</div>
+          <div className="flex items-center gap-3">
             <button
-              className="flex items-center gap-2 rounded-2xl border border-numo-border bg-numo-pill px-3 py-2 text-numo-ink text-sm shadow-sm"
+              className="flex items-center gap-2 rounded-full border px-3 py-1 text-sm leading-none"
               onClick={() => setIsTermOpen(true)}
               type="button"
             >
-              <span className="font-semibold">{selectedTerm?.dateLabel ?? "Select"}</span>
-              <Pencil className="h-4 w-4 text-numo-muted" />
+              {selectedTerm?.dateLabel ?? "Select"}
+              <Pencil size={14} className="opacity-60" />
             </button>
-            <div className="mt-2 text-numo-muted text-xs">{daysLabel} term</div>
-          </div>
-          <div className="flex items-center gap-3">
-            <div className="font-bold text-3xl text-emerald-600 leading-none">
+            <div className="min-w-0 text-center font-semibold text-5xl text-neutral-900 leading-none tracking-tight">
               {selectedTerm?.apr.toFixed(2) ?? "0.00"}%
             </div>
-            <span className="rounded-full bg-numo-ink px-3 py-1 font-semibold text-white text-xs">
+            <div className="rounded-full border px-3 py-1 text-neutral-600 text-sm leading-none">
               Fixed APR
-            </span>
+            </div>
           </div>
+          <div className="text-neutral-500 text-xs leading-none">{daysLabel} term</div>
         </div>
       </div>
 
-      <div className="mt-6 flex items-center gap-2">
-        <button
-          aria-label="Back"
-          className="flex h-10 w-10 items-center justify-center rounded-full border border-numo-border bg-white text-numo-muted shadow-sm"
-          type="button"
-        >
-          <ChevronLeft className="h-4 w-4" />
-        </button>
+      <div className="mt-5 flex items-center gap-2">
         <button
           className={cn(
-            "flex-1 rounded-full px-4 py-3 font-semibold text-sm shadow-sm transition",
+            "h-12 flex-1 rounded-2xl px-4 font-semibold text-sm text-white shadow-[0_10px_30px_rgba(0,0,0,0.10)] transition-colors",
             canReview
-              ? "bg-numo-ink text-white"
-              : "cursor-not-allowed bg-numo-pill text-numo-muted",
+              ? "bg-black/80 hover:bg-black/90"
+              : "cursor-not-allowed bg-black/10 text-black/30 shadow-none",
           )}
           disabled={!canReview}
           type="button"
@@ -144,7 +149,7 @@ export function LoanForm({ className }: LoanFormProps) {
         </button>
       </div>
 
-      <p className="mt-4 text-center text-numo-muted text-xs">
+      <p className="mt-4 text-center text-black/50 text-xs">
         By executing a transaction, you accept the User Agreement.
       </p>
       <SelectTermSheet
