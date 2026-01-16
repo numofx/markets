@@ -17,9 +17,14 @@ type LoanFormProps = {
   className?: string;
 };
 
-const assetOptions: AssetOption[] = [
-  { code: "USD", name: "US Dollar", flagSrc: "/flags/us.svg" },
-  { code: "KES", name: "Kenyan Shilling", flagSrc: "/flags/ke.svg" },
+const lendAssetOptions: AssetOption[] = [
+  { code: "USDC", name: "U.S. Dollar", flagSrc: "/assets/usdc-logo.svg" },
+  { code: "BRZ", name: "Brazilian Real", flagSrc: "/assets/brz.svg" },
+];
+
+const receiveAssetOptions: AssetOption[] = [
+  { code: "USTRY", name: "U.S. Treasury", flagSrc: "/assets/ustry_logo.png" },
+  { code: "TESOURO", name: "Brazil Treasury", flagSrc: "/assets/tesouro_logo.png" },
 ];
 
 export function LoanForm({ className }: LoanFormProps) {
@@ -32,10 +37,12 @@ export function LoanForm({ className }: LoanFormProps) {
   );
   const [amount, setAmount] = useState("");
   const [primaryAsset, setPrimaryAsset] = useState<AssetOption["code"]>(
-    () => assetOptions.find((option) => option.code === "USDC")?.code ?? assetOptions[0].code,
+    () =>
+      lendAssetOptions.find((option) => option.code === "USDC")?.code ??
+      lendAssetOptions[0].code,
   );
   const [secondaryAsset, setSecondaryAsset] = useState<AssetOption["code"]>(
-    assetOptions[1]?.code ?? assetOptions[0].code,
+    receiveAssetOptions[1]?.code ?? receiveAssetOptions[0].code,
   );
   const [selectedTermId, setSelectedTermId] = useState(termOptions[0]?.id ?? "");
   const [isTermOpen, setIsTermOpen] = useState(false);
@@ -87,7 +94,7 @@ export function LoanForm({ className }: LoanFormProps) {
           />
           <AssetSelect
             onChange={setPrimaryAsset}
-            options={assetOptions}
+            options={lendAssetOptions}
             value={primaryAsset}
           />
         </div>
@@ -104,7 +111,7 @@ export function LoanForm({ className }: LoanFormProps) {
           </div>
           <AssetSelect
             onChange={setSecondaryAsset}
-            options={assetOptions}
+            options={receiveAssetOptions}
             value={secondaryAsset}
           />
         </div>
