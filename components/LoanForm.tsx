@@ -25,6 +25,9 @@ const lendAssetOptions: AssetOption[] = [
 const receiveAssetOptions: AssetOption[] = [
   { code: "USTRY", name: "U.S. Treasury", flagSrc: "/assets/ustry_logo.png" },
   { code: "TESOURO", name: "Brazil Treasury", flagSrc: "/assets/tesouro_logo.png" },
+  { code: "BRLm", name: "Brazilian Real", flagSrc: "/assets/BRLm (Mento Brazilian Real).svg" },
+  { code: "NGNm", name: "Nigerian Naira", flagSrc: "/assets/NGNm (Mento Nigerian Naira).svg" },
+  { code: "KESm", name: "Kenyan Shilling", flagSrc: "/assets/KESm (Mento Kenyan Shilling).svg" },
 ];
 
 export function LoanForm({ className }: LoanFormProps) {
