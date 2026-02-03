@@ -1,4 +1,4 @@
-const WAD = 10n ** 18n;
+export const WAD = 10n ** 18n;
 export const SECONDS_PER_YEAR = 31_536_000n;
 
 export function aprFromPriceWad(pWad: bigint, secondsToMaturity: bigint): bigint | null {

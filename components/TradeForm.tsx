@@ -1,11 +1,10 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { ChevronLeft, Pencil, CalendarDays } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { AssetSelect } from "@/ui/AssetSelect";
-import type { TermOption } from "@/ui/SelectTermSheet";
-import { SelectTermSheet } from "@/ui/SelectTermSheet";
+import { CELO_YIELD_POOL } from "@/src/poolInfo";
+import { aprFromPriceWad, formatAprPercent, WAD } from "@/src/apr";
 
 type AssetOption = {
   code: string;
@@ -13,7 +12,7 @@ type AssetOption = {
   flagSrc: string;
 };
 
-type LoanFormProps = {
+type TradeFormProps = {
   className?: string;
 };
 
@@ -27,13 +26,16 @@ const lendAssetOptions: AssetOption[] = [
 
 const receiveAssetOptions: AssetOption[] = [
   {
-    code: "fyKESm · May 4 2026",
+    code: "fyKESm",
     name: "fyKESm",
     flagSrc: "/assets/KESm (Mento Kenyan Shilling).svg",
   },
 ];
 
 const PRICE_BASE_PER_FY = Number("0.21376880592600005");
+const MATURITY_TIMESTAMP = 1777903200n;
+const BASE_BALANCE_WAD = 6_625_256_142_317_498_712n;
+const FY_BALANCE_WAD = 30_992_623_613_245_757_308n;
 
 function convertBaseToFy(baseAmount: number) {
   return PRICE_BASE_PER_FY > 0 ? baseAmount / PRICE_BASE_PER_FY : 0;
@@ -43,14 +45,11 @@ function formatNumber(value: number) {
   return Number.isFinite(value) ? value.toLocaleString(undefined, { maximumFractionDigits: 6 }) : "0";
 }
 
-export function LoanForm({ className }: LoanFormProps) {
-  const termOptions = useMemo<TermOption[]>(
-    () => [
-      { id: "2026-01-16", dateLabel: "Jan 16", days: 1, apr: 6.0, bestRate: true },
-      { id: "2026-01-22", dateLabel: "Jan 22", days: 7, apr: 5.9, bestRate: false },
-    ],
-    [],
-  );
+function shortAddress(address: string) {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
+export function TradeForm({ className }: TradeFormProps) {
   const [amount, setAmount] = useState("");
   const [primaryAsset, setPrimaryAsset] = useState<AssetOption["code"]>(
     () => lendAssetOptions[0].code,
@@ -58,11 +57,6 @@ export function LoanForm({ className }: LoanFormProps) {
   const [secondaryAsset, setSecondaryAsset] = useState<AssetOption["code"]>(
     () => receiveAssetOptions[0].code,
   );
-  const [selectedTermId, setSelectedTermId] = useState(termOptions[0]?.id ?? "");
-  const [isTermOpen, setIsTermOpen] = useState(false);
-
-  const selectedTerm =
-    termOptions.find((option) => option.id === selectedTermId) ?? termOptions[0];
   const amountValue = Number.parseFloat(amount);
   const receiveAmount =
     amount === "" || Number.isNaN(amountValue)
@@ -71,8 +65,18 @@ export function LoanForm({ className }: LoanFormProps) {
   const canReview =
     Number.isFinite(amountValue) &&
     amountValue > 0 &&
-    Boolean(primaryAsset) &&
-    Boolean(selectedTermId);
+    Boolean(primaryAsset);
+
+  const aprText = useMemo(() => {
+    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+    const timeRemaining = MATURITY_TIMESTAMP - nowSeconds;
+    if (timeRemaining <= 0n) {
+      return "—";
+    }
+    const priceWad = (BASE_BALANCE_WAD * WAD) / FY_BALANCE_WAD;
+    const apr = aprFromPriceWad(priceWad, timeRemaining);
+    return formatAprPercent(apr);
+  }, []);
 
   return (
     <div
@@ -120,34 +124,15 @@ export function LoanForm({ className }: LoanFormProps) {
       </div>
     </div>
 
-    <div className="mt-5 rounded-2xl border border-black/10 bg-white px-4 py-3 shadow-[0_1px_0_rgba(0,0,0,0.04)]">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="flex h-9 items-center gap-1 rounded-full border border-black/10 bg-[#F6F6F2] px-3 font-semibold text-black/80 text-sm">
-            <CalendarDays className="h-3 w-3 text-black/50" />
-            {selectedTerm?.dateLabel ?? "Select"}
-          </span>
-          <button
-            className="flex h-8 w-8 items-center justify-center rounded-full border border-black/10 text-black/50"
-            onClick={() => setIsTermOpen(true)}
-            type="button"
-          >
-            <Pencil className="h-3 w-3" />
-          </button>
-          <span className="text-black/60 text-sm">·</span>
-          <span className="text-black/80 text-sm">
-            {selectedTerm?.days === 1 ? "1 day" : `${selectedTerm?.days ?? 0} days`}
-          </span>
-        </div>
-        <div className="flex flex-col items-end text-right">
-          <span className="text-black/60 text-xs">You lock in</span>
-          <span className="font-semibold text-lg text-neutral-900">5.80% APR</span>
+      <div className="mt-5 rounded-2xl border border-black/10 bg-white px-4 py-3 shadow-[0_1px_0_rgba(0,0,0,0.04)]">
+        <div className="flex items-center justify-between">
+          <div className="text-black/60 text-sm">You lock in</div>
+          <div className="font-semibold text-lg text-neutral-900">{aprText}</div>
         </div>
       </div>
-    </div>
 
-    <div className="mt-5 flex items-center gap-2">
-      <button
+      <div className="mt-5 flex items-center gap-2">
+        <button
         className={cn(
           "h-12 flex-1 rounded-2xl px-4 font-semibold text-sm text-white shadow-[0_10px_30px_rgba(0,0,0,0.10)] transition-colors",
           canReview
@@ -158,19 +143,25 @@ export function LoanForm({ className }: LoanFormProps) {
         type="button"
       >
         Review Order → Buy fyKESm
-      </button>
-    </div>
+        </button>
+      </div>
+
+      <div className="mt-3 text-center text-black/50 text-xs">
+        Pool{" "}
+        <a
+          className="text-black/80 underline-offset-2 hover:text-black"
+          href={CELO_YIELD_POOL.explorerUrl}
+          target="_blank"
+          rel="noreferrer"
+        >
+          {shortAddress(CELO_YIELD_POOL.poolAddress)}
+        </a>
+        {" "}on Celoscan
+      </div>
 
       <p className="mt-4 text-center text-black/50 text-xs">
         By executing a transaction, you accept the User Agreement.
       </p>
-      <SelectTermSheet
-        onClose={() => setIsTermOpen(false)}
-        onSelect={setSelectedTermId}
-        open={isTermOpen}
-        options={termOptions}
-        selectedId={selectedTermId}
-      />
     </div>
   );
 }
