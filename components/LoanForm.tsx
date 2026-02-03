@@ -81,16 +81,6 @@ export function LoanForm({ className }: LoanFormProps) {
         className,
       )}
     >
-      <div className="mb-4 flex items-center">
-        <button
-          aria-label="Back"
-          className="flex h-10 w-10 items-center justify-center rounded-full border border-black/10 bg-black/5 text-black/50 shadow-none"
-          type="button"
-        >
-          <ChevronLeft className="h-4 w-4" />
-        </button>
-      </div>
-
     <div className="rounded-3xl border border-black/5 bg-[#F6F6F2] p-5 shadow-[0_1px_0_rgba(0,0,0,0.04)]">
       <div className="font-medium text-[11px] text-black/60">You pay</div>
       <div className="mt-4 flex items-center justify-between gap-4">
@@ -103,7 +93,12 @@ export function LoanForm({ className }: LoanFormProps) {
           type="text"
           value={amount}
         />
-        <AssetSelect onChange={setPrimaryAsset} options={lendAssetOptions} value={primaryAsset} />
+        <AssetSelect
+          onChange={setPrimaryAsset}
+          options={lendAssetOptions}
+          value={primaryAsset}
+          headerLabel="Select currency"
+        />
       </div>
       <div className="mt-2 text-black/35 text-xs">KESm</div>
     </div>
@@ -120,7 +115,6 @@ export function LoanForm({ className }: LoanFormProps) {
           value={secondaryAsset}
         />
       </div>
-      <div className="mt-2 text-black/35 text-xs">fyKESm · May 4 2026</div>
       <div className="mt-1 text-black/50 text-xs">
         Redeems 1:1 for KESm at maturity
       </div>

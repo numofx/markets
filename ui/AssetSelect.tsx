@@ -16,9 +16,10 @@ type AssetSelectProps = {
   value?: AssetOption["code"];
   onChange?: (value: AssetOption["code"]) => void;
   className?: string;
+  headerLabel?: string;
 };
 
-export function AssetSelect({ options, value, onChange, className }: AssetSelectProps) {
+export function AssetSelect({ options, value, onChange, className, headerLabel }: AssetSelectProps) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<AssetOption["code"]>(value ?? options[0].code);
 
@@ -55,7 +56,7 @@ export function AssetSelect({ options, value, onChange, className }: AssetSelect
       {open ? (
         <div className="absolute left-0 z-10 mt-2 w-72 rounded-2xl border border-numo-border bg-white p-2 shadow-lg">
           <div className="px-3 py-2 font-semibold text-numo-muted text-xs uppercase tracking-wide">
-            Select bond
+            {headerLabel ?? "Select bond"}
           </div>
           <div className="flex flex-col">
             {options.map((option) => (
