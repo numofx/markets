@@ -14,26 +14,22 @@ type NavBarProps = {
 
 export function NavBar({ items, className }: NavBarProps) {
   return (
-    <header className={cn("w-full", className)}>
-      <div className="mx-auto flex w-full max-w-6xl items-center justify-between gap-4 px-4 py-6">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center">
-            <Image
-              alt="Numo"
-              height={40}
-              priority
-              src="/numo_logo.png"
-              width={160}
-            />
-          </div>
+    <header className={cn("mx-auto w-full max-w-6xl px-6 pt-6", className)}>
+      <div className="grid grid-cols-3 items-center">
+        <div className="justify-self-start">
+          <Image alt="Numo" height={40} priority src="/numo_logo.png" width={160} />
+        </div>
+
+        <div className="justify-self-center">
           <PillTabs
-            className="hidden sm:flex"
+            className="gap-6"
             defaultValue={items[0]?.label}
             size="sm"
             tabs={items.map((item) => item.label)}
           />
         </div>
-        <div className="flex items-center gap-2">
+
+        <div className="flex items-center gap-2 justify-self-end">
           <div className="flex items-center gap-2 rounded-full border border-numo-border bg-white px-3 py-2 font-semibold text-numo-ink text-xs shadow-sm">
             <Wallet className="h-4 w-4 text-numo-muted" />
             0x71C7...976F
