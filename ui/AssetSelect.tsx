@@ -33,7 +33,7 @@ export function AssetSelect({ options, value, onChange, className }: AssetSelect
   return (
     <div className={cn("relative", className)}>
       <button
-        className="flex items-center gap-2 rounded-full border border-border bg-white px-3 py-1.5 font-semibold text-numo-ink/90 text-xs shadow-none"
+        className="flex min-w-[180px] items-center justify-between gap-2 rounded-full border border-border bg-white px-3 py-1.5 font-semibold text-numo-ink/90 text-xs shadow-none"
         onClick={() => setOpen((prev) => !prev)}
         type="button"
       >
@@ -53,9 +53,9 @@ export function AssetSelect({ options, value, onChange, className }: AssetSelect
       </button>
 
       {open ? (
-        <div className="absolute left-0 z-10 mt-2 w-60 rounded-2xl border border-numo-border bg-white p-2 shadow-lg">
+        <div className="absolute left-0 z-10 mt-2 w-72 rounded-2xl border border-numo-border bg-white p-2 shadow-lg">
           <div className="px-3 py-2 font-semibold text-numo-muted text-xs uppercase tracking-wide">
-            Select currency
+            Select bond
           </div>
           <div className="flex flex-col">
             {options.map((option) => (
