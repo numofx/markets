@@ -1,21 +1,25 @@
 "use client";
 
-import * as React from "react";
-import { PrivyProvider } from "@privy-io/react-auth";
 import { celo } from "@privy-io/chains";
+import { PrivyProvider } from "@privy-io/react-auth";
+import type { ReactNode } from "react";
 
-export default function Providers({ children }: { children: React.ReactNode }) {
+export default function Providers({ children }: { children: ReactNode }) {
+  const appId = process.env.NEXT_PUBLIC_PRIVY_APP_ID;
+  if (!appId) {
+    throw new Error("Missing NEXT_PUBLIC_PRIVY_APP_ID");
+  }
+
   return (
     <PrivyProvider
-      appId={process.env.NEXT_PUBLIC_PRIVY_APP_ID!}
+      appId={appId}
       config={{
-        loginMethods: ["email", "wallet"],
-        supportedChains: [celo],
         defaultChain: celo,
-        shouldEnforceDefaultChainOnConnect: true,
         embeddedWallets: {
           ethereum: { createOnLogin: "users-without-wallets" },
         },
+        loginMethods: ["email", "wallet"],
+        supportedChains: [celo],
       }}
     >
       {children}
