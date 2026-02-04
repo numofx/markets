@@ -1,7 +1,8 @@
-import { Bell, ChevronDown, Menu, Wallet } from "lucide-react";
+import { Bell, Menu } from "lucide-react";
 import Image from "next/image";
 import { cn } from "@/lib/cn";
 import { PillTabs } from "@/ui/PillTabs";
+import { PrivyConnectPill } from "@/components/PrivyConnectPill";
 
 type NavItem = {
   label: string;
@@ -30,11 +31,7 @@ export function NavBar({ items, className }: NavBarProps) {
         </div>
 
         <div className="flex items-center gap-2 justify-self-end">
-          <div className="flex items-center gap-2 rounded-full border border-numo-border bg-white px-3 py-2 font-semibold text-numo-ink text-xs shadow-sm">
-            <Wallet className="h-4 w-4 text-numo-muted" />
-            0x71C7...976F
-            <ChevronDown className="h-3 w-3 text-numo-muted" />
-          </div>
+          <PrivyConnectPill />
           <button
             aria-label="Notifications"
             className="flex h-9 w-9 items-center justify-center rounded-full border border-numo-border bg-white text-numo-muted shadow-sm"
