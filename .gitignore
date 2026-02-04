@@ -5,6 +5,7 @@ dist/
 node_modules/
 
 # files
+*.env.local
 *.env
 *.log
 next-env.d.ts

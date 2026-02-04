@@ -5,7 +5,7 @@ import { ChevronDown, Wallet } from "lucide-react";
 import { usePrivy } from "@privy-io/react-auth";
 
 export function PrivyConnectPill() {
-  const { ready, authenticated, login, logout, user } = usePrivy();
+  const { ready, authenticated, login, user } = usePrivy();
 
   if (!ready) {
     return null;
@@ -16,8 +16,11 @@ export function PrivyConnectPill() {
 
   return (
     <button
-      onClick={authenticated ? logout : login}
-      title={authenticated ? "Disconnect" : undefined}
+      onClick={() => {
+        if (!authenticated) {
+          login();
+        }
+      }}
       className="flex items-center gap-2 rounded-full border border-numo-border bg-white px-3 py-2 font-semibold text-numo-ink text-xs shadow-sm"
       type="button"
     >
