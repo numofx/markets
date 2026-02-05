@@ -5,6 +5,11 @@ import { cn } from "@/lib/cn";
 import { aprFromPriceWad, formatAprPercent, WAD } from "@/src/apr";
 import { CELO_YIELD_POOL } from "@/src/poolInfo";
 import { AssetSelect } from "@/ui/AssetSelect";
+import { usePoolReads } from "@/lib/usePoolReads";
+import { usePrivyAddress } from "@/lib/usePrivyAddress";
+import { publicClient } from "@/lib/celoClients";
+import { poolAbi } from "@/lib/abi/pool";
+import { formatUnits, parseUnits, type Address } from "viem";
 
 type AssetOption = {
   code: string;
@@ -32,15 +37,6 @@ const receiveAssetOptions: AssetOption[] = [
   },
 ];
 
-const PRICE_BASE_PER_FY = Number("0.21376880592600005");
-const MATURITY_TIMESTAMP = 1777903200n;
-const BASE_BALANCE_WAD = 6_625_256_142_317_498_712n;
-const FY_BALANCE_WAD = 30_992_623_613_245_757_308n;
-
-function convertBaseToFy(baseAmount: number) {
-  return PRICE_BASE_PER_FY > 0 ? baseAmount / PRICE_BASE_PER_FY : 0;
-}
-
 function formatNumber(value: number) {
   return Number.isFinite(value)
     ? value.toLocaleString(undefined, { maximumFractionDigits: 6 })
@@ -53,30 +49,117 @@ function shortAddress(address: string) {
 
 export function TradeForm({ className }: TradeFormProps) {
   const [amount, setAmount] = useState("");
+  const [quote, setQuote] = useState<string>("0");
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [quoteLoading, setQuoteLoading] = useState(false);
+  const userAddress: Address | undefined = usePrivyAddress();
+  const {
+    loading,
+    error,
+    poolBaseBalance,
+    poolFyBalance,
+    maturity,
+    baseDecimals,
+    fyDecimals,
+    baseSymbol,
+    fySymbol,
+    userBaseBal,
+    userFyBal,
+  } = usePoolReads(userAddress);
   const [primaryAsset, setPrimaryAsset] = useState<AssetOption["code"]>(
     () => lendAssetOptions[0].code
   );
   const [secondaryAsset, setSecondaryAsset] = useState<AssetOption["code"]>(
     () => receiveAssetOptions[0].code
   );
-  const amountValue = Number.parseFloat(amount);
-  const receiveAmount =
-    amount === "" || Number.isNaN(amountValue) ? "0" : formatNumber(convertBaseToFy(amountValue));
-  const canReview = Number.isFinite(amountValue) && amountValue > 0 && Boolean(primaryAsset);
+  const receiveAmount = quote;
 
   const [aprText, setAprText] = useState("—");
 
   useEffect(() => {
+    if (maturity == null || poolBaseBalance == null || poolFyBalance == null) {
+      setAprText("—");
+      return;
+    }
     const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
-    const timeRemaining = MATURITY_TIMESTAMP - nowSeconds;
+    const timeRemaining = BigInt(maturity) - nowSeconds;
     if (timeRemaining <= 0n) {
       setAprText("—");
       return;
     }
-    const priceWad = (BASE_BALANCE_WAD * WAD) / FY_BALANCE_WAD;
+    const priceWad = (poolBaseBalance * WAD) / poolFyBalance;
     const apr = aprFromPriceWad(priceWad, timeRemaining);
     setAprText(formatAprPercent(apr));
-  }, []);
+  }, [maturity, poolBaseBalance, poolFyBalance]);
+
+  useEffect(() => {
+    if (baseDecimals == null || fyDecimals == null || amount === "") {
+      setQuote("0");
+      setQuoteError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setQuoteLoading(true);
+
+    const timeout = setTimeout(() => {
+      const fetchQuote = async () => {
+        try {
+          const baseAmount = parseUnits(amount, baseDecimals);
+          const maxUint128 = (1n << 128n) - 1n;
+          if (baseAmount > maxUint128) {
+            throw new Error("Amount too large for pool preview.");
+          }
+          const fyOut = await publicClient.readContract({
+            address: CELO_YIELD_POOL.poolAddress as Address,
+            abi: poolAbi,
+            functionName: "sellBasePreview",
+            args: [baseAmount],
+          });
+          if (cancelled) {
+            return;
+          }
+          setQuote(formatNumber(Number.parseFloat(formatUnits(fyOut, fyDecimals))));
+          setQuoteError(null);
+        } catch (caught) {
+          if (cancelled) {
+            return;
+          }
+          setQuote("0");
+          setQuoteError(caught instanceof Error ? caught.message : "Failed to quote");
+        } finally {
+          if (!cancelled) {
+            setQuoteLoading(false);
+          }
+        }
+      };
+
+      void fetchQuote();
+    }, 200);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
+  }, [amount, baseDecimals, fyDecimals]);
+
+  const maturityLabel = maturity != null ? new Date(maturity * 1000).toLocaleString() : "—";
+  const poolBaseLabel =
+    poolBaseBalance != null && baseDecimals != null && baseSymbol
+      ? `${formatUnits(poolBaseBalance, baseDecimals)} ${baseSymbol}`
+      : "—";
+  const poolFyLabel =
+    poolFyBalance != null && fyDecimals != null && fySymbol
+      ? `${formatUnits(poolFyBalance, fyDecimals)} ${fySymbol}`
+      : "—";
+  const userBaseLabel =
+    userBaseBal != null && baseDecimals != null && baseSymbol
+      ? `${formatUnits(userBaseBal, baseDecimals)} ${baseSymbol}`
+      : null;
+  const userFyLabel =
+    userFyBal != null && fyDecimals != null && fySymbol
+      ? `${formatUnits(userFyBal, fyDecimals)} ${fySymbol}`
+      : null;
 
   return (
     <div
@@ -122,6 +205,31 @@ export function TradeForm({ className }: TradeFormProps) {
         <div className="mt-1 text-black/50 text-xs">Redeems 1:1 for KESm at maturity</div>
       </div>
 
+      <div className="mt-4 rounded-2xl border border-black/10 bg-white px-4 py-3 text-xs text-black/60 shadow-[0_1px_0_rgba(0,0,0,0.04)]">
+        <div className="flex items-center justify-between">
+          <span>Maturity</span>
+          <span className="text-black/80">{maturityLabel}</span>
+        </div>
+        <div className="mt-2 flex items-center justify-between">
+          <span>Pool balances</span>
+          <span className="text-black/80">
+            {poolBaseLabel} · {poolFyLabel}
+          </span>
+        </div>
+        {userBaseLabel && userFyLabel ? (
+          <div className="mt-2 flex items-center justify-between">
+            <span>Your balances</span>
+            <span className="text-black/80">
+              {userBaseLabel} · {userFyLabel}
+            </span>
+          </div>
+        ) : null}
+        {loading ? <div className="mt-2 text-black/40">Loading onchain data…</div> : null}
+        {error ? <div className="mt-2 text-red-500">{error.message}</div> : null}
+        {quoteLoading ? <div className="mt-2 text-black/40">Updating quote…</div> : null}
+        {quoteError ? <div className="mt-2 text-red-500">{quoteError}</div> : null}
+      </div>
+
       <div className="mt-5 rounded-2xl border border-black/10 bg-white px-4 py-3 shadow-[0_1px_0_rgba(0,0,0,0.04)]">
         <div className="flex items-center justify-between">
           <div className="text-black/60 text-sm">You lock in</div>
@@ -133,14 +241,12 @@ export function TradeForm({ className }: TradeFormProps) {
         <button
           className={cn(
             "h-12 flex-1 rounded-2xl px-4 font-semibold text-sm text-white shadow-[0_10px_30px_rgba(0,0,0,0.10)] transition-colors",
-            canReview
-              ? "bg-black/80 hover:bg-black/90"
-              : "cursor-not-allowed bg-black/10 text-black/30 shadow-none"
+            "cursor-not-allowed bg-black/10 text-black/30 shadow-none"
           )}
-          disabled={!canReview}
+          disabled
           type="button"
         >
-          Review Order → Buy fyKESm
+          Read-only (coming next)
         </button>
       </div>
 

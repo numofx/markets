@@ -1,17 +1,18 @@
 "use client";
 
-import * as React from "react";
 import { ChevronDown, Wallet } from "lucide-react";
 import { usePrivy } from "@privy-io/react-auth";
+import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
 
 export function PrivyConnectPill() {
-  const { ready, authenticated, login, user } = usePrivy();
+  const { ready, authenticated, login } = usePrivy();
+  const { wallet } = usePrivyWalletClient();
 
   if (!ready) {
     return null;
   }
 
-  const addr = authenticated ? user?.wallet?.address : null;
+  const addr = authenticated ? wallet?.address ?? null : null;
   const label = addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "Connect wallet";
 
   return (
