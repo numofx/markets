@@ -10,6 +10,8 @@ import { CELO_YIELD_POOL } from "@/src/poolInfo";
 type UsePoolReadsResult = {
   loading: boolean;
   error: Error | null;
+  baseToken: Address | null;
+  fyToken: Address | null;
   poolBaseBalance: bigint | null;
   poolFyBalance: bigint | null;
   maturity: number | null;
@@ -94,6 +96,8 @@ async function readPoolSnapshot(userAddress?: Address): Promise<PoolSnapshot> {
 export function usePoolReads(userAddress?: Address): UsePoolReadsResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const [baseToken, setBaseToken] = useState<Address | null>(null);
+  const [fyToken, setFyToken] = useState<Address | null>(null);
   const [poolBaseBalance, setPoolBaseBalance] = useState<bigint | null>(null);
   const [poolFyBalance, setPoolFyBalance] = useState<bigint | null>(null);
   const [maturity, setMaturity] = useState<number | null>(null);
@@ -115,6 +119,8 @@ export function usePoolReads(userAddress?: Address): UsePoolReadsResult {
         if (cancelled) {
           return;
         }
+        setBaseToken(snapshot.baseToken);
+        setFyToken(snapshot.fyToken);
         setPoolBaseBalance(snapshot.baseBalance);
         setPoolFyBalance(snapshot.fyBalance);
         setMaturity(snapshot.maturity);
@@ -147,6 +153,8 @@ export function usePoolReads(userAddress?: Address): UsePoolReadsResult {
   return {
     loading,
     error,
+    baseToken,
+    fyToken,
     poolBaseBalance,
     poolFyBalance,
     maturity,

@@ -55,7 +55,11 @@ export function usePrivyWalletClient(): UsePrivyWalletClientResult {
   const [error, setError] = useState<Error | null>(null);
 
   useEffect(() => {
-    const connectedWallet = wallets.find((item) => item.type === "ethereum") ?? null;
+    const connectedWallet =
+      wallets.find((item) => item.type === "ethereum" && item.isConnected) ??
+      wallets.find((item) => item.type === "ethereum" && item.address) ??
+      wallets.find((item) => item.type === "ethereum") ??
+      null;
     setWallet(connectedWallet);
   }, [wallets]);
 

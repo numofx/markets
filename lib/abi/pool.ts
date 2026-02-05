@@ -7,5 +7,6 @@ export const poolAbi = parseAbi([
   "function maturity() view returns (uint32)",
   "function getBaseBalance() view returns (uint128)",
   "function getFYTokenBalance() view returns (uint128)",
+  "function sellBase(address to, uint128 min) returns (uint128)",
   "function sellBasePreview(uint128) view returns (uint128)",
 ]);
