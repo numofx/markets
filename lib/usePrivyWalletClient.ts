@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import type { ConnectedWallet, EIP1193Provider } from "@privy-io/react-auth";
 import { useWallets } from "@privy-io/react-auth";
+import { useEffect, useState } from "react";
 import type { Chain, WalletClient } from "viem";
 import { createWalletClient, custom } from "viem";
 import { celo } from "viem/chains";
@@ -101,10 +101,10 @@ export function usePrivyWalletClient(): UsePrivyWalletClientResult {
   }, [wallet]);
 
   return {
+    error,
+    provider,
     ready,
     wallet,
-    provider,
     walletClient,
-    error,
   };
 }
