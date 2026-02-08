@@ -9,6 +9,7 @@ import {
   repayFyKes,
   withdrawUsdt,
 } from "@/src/borrow-actions";
+import { BORROW_CONFIG } from "@/src/borrow-config";
 
 type BorrowFormProps = {
   className?: string;
@@ -24,13 +25,19 @@ export function BorrowForm({ className }: BorrowFormProps) {
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [pendingAction, setPendingAction] = useState<ActionName>(null);
   const [status, setStatus] = useState<string | null>(null);
+  const [steps, setSteps] = useState<string[]>([]);
 
-  async function runAction(action: ActionName, handler: () => Promise<string>) {
+  async function runAction(
+    action: ActionName,
+    handler: () => Promise<{ status: string; steps: string[] }>
+  ) {
     setPendingAction(action);
     setStatus(null);
+    setSteps([]);
     try {
-      const nextStatus = await handler();
-      setStatus(nextStatus);
+      const nextResult = await handler();
+      setStatus(nextResult.status);
+      setSteps(nextResult.steps);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       setStatus(`Error: ${message}`);
@@ -57,6 +64,16 @@ export function BorrowForm({ className }: BorrowFormProps) {
           {vaultId ? `Vault: ${vaultId}` : "No vault yet"}
         </div>
       </div>
+      <div className="mt-4 rounded-2xl border border-numo-border bg-white px-4 py-3 text-numo-muted text-xs">
+        <div className="flex flex-wrap gap-x-6 gap-y-1">
+          <span>SeriesId: {BORROW_CONFIG.seriesId.fyKesm}</span>
+          <span>BaseId (KESm): {BORROW_CONFIG.baseIds.kesm}</span>
+          <span>Ilk (USDT): {BORROW_CONFIG.ilk.usdt}</span>
+          <span>USDT: {BORROW_CONFIG.tokens.usdt}</span>
+          <span>USDT Join: {BORROW_CONFIG.joins.usdt}</span>
+          <span>FYKESm: {BORROW_CONFIG.tokens.fyKesm}</span>
+        </div>
+      </div>
 
       <div className="mt-6 grid gap-4 md:grid-cols-2">
         <div className="rounded-2xl border border-numo-border bg-white p-4 shadow-sm">
@@ -71,7 +88,10 @@ export function BorrowForm({ className }: BorrowFormProps) {
               runAction("create", async () => {
                 const result = await createVault();
                 setVaultId(result.vaultId);
-                return `Vault created • ${result.txHash}`;
+                return {
+                  status: `Tx 1 — Vault created • ${result.txHash}`,
+                  steps: result.steps,
+                };
               })
             }
             type="button"
@@ -98,7 +118,10 @@ export function BorrowForm({ className }: BorrowFormProps) {
             onClick={() =>
               runAction("deposit", async () => {
                 const result = await depositUsdt(usdtDeposit);
-                return `Deposited USDT • ${result.txHash}`;
+                return {
+                  status: `Tx 2 — Deposited USDT • ${result.txHash}`,
+                  steps: result.steps,
+                };
               })
             }
             type="button"
@@ -123,7 +146,10 @@ export function BorrowForm({ className }: BorrowFormProps) {
             onClick={() =>
               runAction("borrow", async () => {
                 const result = await borrowFyKes(borrowAmount);
-                return `Borrowed fyKESm • ${result.txHash}`;
+                return {
+                  status: `Tx 3 — Borrowed fyKESm • ${result.txHash}`,
+                  steps: result.steps,
+                };
               })
             }
             type="button"
@@ -150,7 +176,10 @@ export function BorrowForm({ className }: BorrowFormProps) {
             onClick={() =>
               runAction("repay", async () => {
                 const result = await repayFyKes(repayAmount);
-                return `Repaid fyKESm • ${result.txHash}`;
+                return {
+                  status: `Tx 4 — Repaid fyKESm • ${result.txHash}`,
+                  steps: result.steps,
+                };
               })
             }
             type="button"
@@ -178,7 +207,10 @@ export function BorrowForm({ className }: BorrowFormProps) {
               onClick={() =>
                 runAction("withdraw", async () => {
                   const result = await withdrawUsdt(withdrawAmount);
-                  return `Withdrew USDT • ${result.txHash}`;
+                  return {
+                    status: `Tx 5 — Withdrew USDT • ${result.txHash}`,
+                    steps: result.steps,
+                  };
                 })
               }
               type="button"
@@ -191,7 +223,15 @@ export function BorrowForm({ className }: BorrowFormProps) {
 
       {status ? (
         <div className="mt-4 rounded-2xl border border-numo-border bg-numo-pill px-4 py-3 text-numo-ink text-xs">
-          {status}
+          <div>{status}</div>
+          {steps.length > 0 ? (
+            <div className="mt-2 space-y-1 text-[11px] text-numo-muted">
+              <div>USDT has 6 decimals: 10 USDT = 10,000,000.</div>
+              {steps.map((step) => (
+                <div key={step}>• {step}</div>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
