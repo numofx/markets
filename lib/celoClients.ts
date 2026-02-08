@@ -12,6 +12,8 @@ const isPlaceholder =
   envUrl === "YOUR_CELO_RPC";
 const rpcUrl = !envUrl || isPlaceholder ? fallbackUrl : envUrl;
 
+export const CELO_RPC_URL = rpcUrl;
+
 if (isPlaceholder) {
   // eslint-disable-next-line no-console
   console.warn(

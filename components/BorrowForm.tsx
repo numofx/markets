@@ -1,239 +1,301 @@
 "use client";
 
-import { useState } from "react";
-import { cn } from "@/lib/cn";
-import {
-  borrowFyKes,
-  createVault,
-  depositUsdt,
-  repayFyKes,
-  withdrawUsdt,
-} from "@/src/borrow-actions";
+import { useEffect, useState } from "react";
+import type { Address, Hex, WalletClient } from "viem";
+import { formatUnits, parseUnits } from "viem";
+import { BorrowFormView } from "@/components/BorrowFormView";
+import { useBorrowVaultId } from "@/lib/useBorrowVaultId";
+import { useBorrowWalletData } from "@/lib/useBorrowWalletData";
+import { usePrivyAddress } from "@/lib/usePrivyAddress";
+import { publicClient, CELO_RPC_URL } from "@/lib/celoClients";
+import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
+import { approveUsdtJoin, buildVault, pour, sellFyKes } from "@/src/borrow-actions";
 import { BORROW_CONFIG } from "@/src/borrow-config";
+import { quoteFyForKes } from "@/src/borrow-quote";
+import { CELO_YIELD_POOL } from "@/src/poolInfo";
 
 type BorrowFormProps = {
   className?: string;
 };
 
-type ActionName = "create" | "deposit" | "borrow" | "repay" | "withdraw" | null;
+function safeParseAmount(value: string, decimals: number) {
+  const numeric = Number.parseFloat(value);
+  if (!value || Number.isNaN(numeric) || numeric <= 0) {
+    return null;
+  }
+  try {
+    return parseUnits(value, decimals);
+  } catch {
+    return null;
+  }
+}
 
-export function BorrowForm({ className }: BorrowFormProps) {
-  const [vaultId, setVaultId] = useState<string | null>(null);
-  const [usdtDeposit, setUsdtDeposit] = useState("");
-  const [borrowAmount, setBorrowAmount] = useState("");
-  const [repayAmount, setRepayAmount] = useState("");
-  const [withdrawAmount, setWithdrawAmount] = useState("");
-  const [pendingAction, setPendingAction] = useState<ActionName>(null);
-  const [status, setStatus] = useState<string | null>(null);
-  const [steps, setSteps] = useState<string[]>([]);
-
-  async function runAction(
-    action: ActionName,
-    handler: () => Promise<{ status: string; steps: string[] }>
-  ) {
-    setPendingAction(action);
-    setStatus(null);
-    setSteps([]);
-    try {
-      const nextResult = await handler();
-      setStatus(nextResult.status);
-      setSteps(nextResult.steps);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
-      setStatus(`Error: ${message}`);
-    } finally {
-      setPendingAction(null);
-    }
+async function runBorrowFlow(params: {
+  account: Address;
+  walletClient: WalletClient;
+  collateral: bigint;
+  borrowKesDesired: bigint;
+  allowance: bigint | null;
+  vaultId: Hex | null;
+  storageKey: string | null;
+  onStatus: (status: string) => void;
+  onTxHash: (hash: Hex) => void;
+  persistVaultId: (vaultId: Hex) => void;
+}) {
+  const needsApproval = params.allowance === null || params.allowance < params.collateral;
+  if (needsApproval) {
+    params.onStatus("Step 1/3: Approving USDT…");
+    const approval = await approveUsdtJoin({
+      account: params.account,
+      amount: params.collateral,
+      walletClient: params.walletClient,
+    });
+    params.onTxHash(approval.txHash);
   }
 
+  let nextVaultId: Hex | null = params.vaultId;
+  if (!nextVaultId) {
+    params.onStatus("Step 2/3: Building vault…");
+    const built = await buildVault({ account: params.account, walletClient: params.walletClient });
+    nextVaultId = built.vaultId;
+    params.onTxHash(built.txHash);
+    params.persistVaultId(nextVaultId);
+    if (typeof window !== "undefined" && params.storageKey) {
+      window.localStorage.setItem(params.storageKey, nextVaultId);
+    }
+  }
+  if (!nextVaultId) {
+    throw new Error("Vault unavailable.");
+  }
+
+  const quote = await quoteFyForKes(params.borrowKesDesired);
+  if (quote.fyToBorrow <= 0n) {
+    throw new Error("Quote unavailable.");
+  }
+
+  // We mint fyKESm directly into the pool and immediately sell it for KESm.
+  // This makes the UX feel like borrowing KESm, while the debt is still denominated in fyKESm.
+  params.onStatus("Step 3/4: Supplying collateral and borrowing…");
+  const result = await pour({
+    account: params.account,
+    art: quote.fyToBorrow,
+    ink: params.collateral,
+    to: CELO_YIELD_POOL.poolAddress as Address,
+    vaultId: nextVaultId,
+    walletClient: params.walletClient,
+  });
+  params.onTxHash(result.txHash);
+
+  const slippageBps = 50n;
+  const minKesOut = (params.borrowKesDesired * (10_000n - slippageBps)) / 10_000n;
+  params.onStatus("Step 4/4: Swapping fyKESm into KESm…");
+  const swapResult = await sellFyKes({
+    account: params.account,
+    minKesOut,
+    walletClient: params.walletClient,
+  });
+  params.onTxHash(swapResult.txHash);
+
+  return { vaultId: nextVaultId };
+}
+
+function getBorrowValidationError(params: {
+  userAddress?: Address;
+  walletClient: WalletClient | null;
+  collateral: bigint | null;
+  borrow: bigint | null;
+  usdtBalance: bigint | null;
+}) {
+  if (!params.userAddress) {
+    return "Connect wallet to continue.";
+  }
+  if (!params.walletClient) {
+    return "Wallet client unavailable.";
+  }
+  if (!(params.collateral && params.borrow)) {
+    return "Enter collateral and borrow amounts.";
+  }
+  if (params.usdtBalance !== null && params.collateral > params.usdtBalance) {
+    return "Insufficient USDT balance.";
+  }
+  return null;
+}
+
+async function submitBorrowPosition(params: {
+  userAddress?: Address;
+  walletClient: WalletClient | null;
+  parsedCollateral: bigint | null;
+  parsedBorrowKes: bigint | null;
+  usdtAllowance: bigint | null;
+  vaultId: Hex | null;
+  storageKey: string | null;
+  setVaultId: (vaultId: Hex | null) => void;
+  setIsSubmitting: (value: boolean) => void;
+  setTxStatus: (value: string | null) => void;
+  setTxHash: (value: Hex | null) => void;
+  refetch: (address: Address) => Promise<void>;
+}) {
+  if (!(params.userAddress && params.walletClient)) {
+    return;
+  }
+  if (!(params.parsedCollateral && params.parsedBorrowKes)) {
+    return;
+  }
+
+  params.setIsSubmitting(true);
+  params.setTxStatus(null);
+  params.setTxHash(null);
+
+  try {
+    const flow = await runBorrowFlow({
+      account: params.userAddress,
+      allowance: params.usdtAllowance,
+      borrowKesDesired: params.parsedBorrowKes,
+      collateral: params.parsedCollateral,
+      onStatus: (status) => params.setTxStatus(status),
+      onTxHash: (hash) => params.setTxHash(hash),
+      persistVaultId: (next) => params.setVaultId(next),
+      storageKey: params.storageKey,
+      vaultId: params.vaultId,
+      walletClient: params.walletClient,
+    });
+    params.setTxStatus("Position updated.");
+    params.setVaultId(flow.vaultId);
+    await params.refetch(params.userAddress);
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : "Borrow failed.";
+    params.setTxStatus(message);
+  } finally {
+    params.setIsSubmitting(false);
+  }
+}
+
+export function BorrowForm({ className }: BorrowFormProps) {
+  const userAddress = usePrivyAddress();
+  const { isCelo, walletClient } = usePrivyWalletClient();
+
+  const [appChainId, setAppChainId] = useState<number | null>(null);
+
+  const [collateralInput, setCollateralInput] = useState("");
+  const [borrowInput, setBorrowInput] = useState("");
+
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [txStatus, setTxStatus] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<Hex | null>(null);
+
+  const { storageKey, vaultId, setVaultId } = useBorrowVaultId({
+    ilkId: BORROW_CONFIG.ilk.usdt,
+    seriesId: BORROW_CONFIG.seriesId.fyKesm,
+    userAddress,
+  });
+
+  const { kesBalance, kesDecimals, lastError, refetch, usdtAllowance, usdtBalance, usdtDecimals } =
+    useBorrowWalletData({
+      fyToken: BORROW_CONFIG.tokens.fyKesm as Address,
+      kesToken: BORROW_CONFIG.tokens.kesm as Address,
+      usdtJoin: BORROW_CONFIG.joins.usdt as Address,
+      usdtToken: BORROW_CONFIG.tokens.usdt as Address,
+      userAddress,
+    });
+
+  const parsedCollateral = safeParseAmount(collateralInput, usdtDecimals);
+  const parsedBorrowKes = safeParseAmount(borrowInput, kesDecimals);
+
+  const collateralBalanceLabel =
+    usdtBalance === null ? "—" : `${formatUnits(usdtBalance, usdtDecimals)} USDT`;
+  const kesBalanceLabel =
+    kesBalance === null ? "—" : `${formatUnits(kesBalance, kesDecimals)} KESm`;
+
+  const ltvPercent =
+    parsedCollateral && parsedBorrowKes && parsedCollateral !== 0n
+      ? Number((parsedBorrowKes * 10_000n) / parsedCollateral) / 100
+      : null;
+
+  const validationError = getBorrowValidationError({
+    borrow: parsedBorrowKes,
+    collateral: parsedCollateral,
+    usdtBalance,
+    userAddress,
+    walletClient,
+  });
+
+  const networkError = isCelo ? null : "Switch wallet network to Celo (42220).";
+  const submitError = networkError ?? validationError;
+
+  const maxCollateralLabel = usdtBalance === null ? null : formatUnits(usdtBalance, usdtDecimals);
+
+  useEffect(() => {
+    let cancelled = false;
+    void publicClient.getChainId().then(
+      (id) => {
+        if (cancelled) {
+          return;
+        }
+        setAppChainId(id);
+      },
+      () => {
+        if (cancelled) {
+          return;
+        }
+        setAppChainId(null);
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
-    <div
-      className={cn(
-        "w-full rounded-3xl border border-numo-border bg-white/80 p-6 shadow-lg backdrop-blur",
-        className
-      )}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h2 className="font-semibold text-numo-ink text-xl">Borrow fyKESm</h2>
-          <p className="text-numo-muted text-sm">
-            Create a vault, post USDT collateral, and borrow fyKESm.
-          </p>
-        </div>
-        <div className="rounded-full border border-numo-border bg-numo-pill px-3 py-1 text-numo-muted text-xs">
-          {vaultId ? `Vault: ${vaultId}` : "No vault yet"}
-        </div>
-      </div>
-      <div className="mt-4 rounded-2xl border border-numo-border bg-white px-4 py-3 text-numo-muted text-xs">
-        <div className="flex flex-wrap gap-x-6 gap-y-1">
-          <span>SeriesId: {BORROW_CONFIG.seriesId.fyKesm}</span>
-          <span>BaseId (KESm): {BORROW_CONFIG.baseIds.kesm}</span>
-          <span>Ilk (USDT): {BORROW_CONFIG.ilk.usdt}</span>
-          <span>USDT: {BORROW_CONFIG.tokens.usdt}</span>
-          <span>USDT Join: {BORROW_CONFIG.joins.usdt}</span>
-          <span>FYKESm: {BORROW_CONFIG.tokens.fyKesm}</span>
-        </div>
-      </div>
-
-      <div className="mt-6 grid gap-4 md:grid-cols-2">
-        <div className="rounded-2xl border border-numo-border bg-white p-4 shadow-sm">
-          <h3 className="font-semibold text-numo-ink text-sm">1. Create Vault</h3>
-          <p className="mt-1 text-numo-muted text-xs">
-            Initializes a fresh vault for your USDT collateral.
-          </p>
-          <button
-            className="mt-3 w-full rounded-xl bg-numo-ink px-4 py-2 font-semibold text-sm text-white transition hover:opacity-90 disabled:opacity-50"
-            disabled={pendingAction !== null}
-            onClick={() =>
-              runAction("create", async () => {
-                const result = await createVault();
-                setVaultId(result.vaultId);
-                return {
-                  status: `Tx 1 — Vault created • ${result.txHash}`,
-                  steps: result.steps,
-                };
-              })
-            }
-            type="button"
-          >
-            {pendingAction === "create" ? "Creating..." : "Create Vault"}
-          </button>
-        </div>
-
-        <div className="rounded-2xl border border-numo-border bg-white p-4 shadow-sm">
-          <h3 className="font-semibold text-numo-ink text-sm">2. Deposit USDT</h3>
-          <p className="mt-1 text-numo-muted text-xs">
-            Add collateral to your vault before borrowing.
-          </p>
-          <input
-            className="mt-3 w-full rounded-xl border border-numo-border px-3 py-2 text-sm focus:border-numo-ink focus:outline-none"
-            onChange={(event) => setUsdtDeposit(event.target.value)}
-            placeholder="USDT amount"
-            type="number"
-            value={usdtDeposit}
-          />
-          <button
-            className="mt-3 w-full rounded-xl bg-numo-ink px-4 py-2 font-semibold text-sm text-white transition hover:opacity-90 disabled:opacity-50"
-            disabled={!vaultId || pendingAction !== null || usdtDeposit.length === 0}
-            onClick={() =>
-              runAction("deposit", async () => {
-                const result = await depositUsdt(usdtDeposit);
-                return {
-                  status: `Tx 2 — Deposited USDT • ${result.txHash}`,
-                  steps: result.steps,
-                };
-              })
-            }
-            type="button"
-          >
-            {pendingAction === "deposit" ? "Depositing..." : "Deposit USDT"}
-          </button>
-        </div>
-
-        <div className="rounded-2xl border border-numo-border bg-white p-4 shadow-sm">
-          <h3 className="font-semibold text-numo-ink text-sm">3. Borrow fyKESm</h3>
-          <p className="mt-1 text-numo-muted text-xs">Borrow against your deposited collateral.</p>
-          <input
-            className="mt-3 w-full rounded-xl border border-numo-border px-3 py-2 text-sm focus:border-numo-ink focus:outline-none"
-            onChange={(event) => setBorrowAmount(event.target.value)}
-            placeholder="fyKESm amount"
-            type="number"
-            value={borrowAmount}
-          />
-          <button
-            className="mt-3 w-full rounded-xl bg-numo-ink px-4 py-2 font-semibold text-sm text-white transition hover:opacity-90 disabled:opacity-50"
-            disabled={!vaultId || pendingAction !== null || borrowAmount.length === 0}
-            onClick={() =>
-              runAction("borrow", async () => {
-                const result = await borrowFyKes(borrowAmount);
-                return {
-                  status: `Tx 3 — Borrowed fyKESm • ${result.txHash}`,
-                  steps: result.steps,
-                };
-              })
-            }
-            type="button"
-          >
-            {pendingAction === "borrow" ? "Borrowing..." : "Borrow fyKESm"}
-          </button>
-        </div>
-
-        <div className="rounded-2xl border border-numo-border bg-white p-4 shadow-sm">
-          <h3 className="font-semibold text-numo-ink text-sm">4. Repay</h3>
-          <p className="mt-1 text-numo-muted text-xs">
-            Repay borrowed fyKESm to unlock collateral.
-          </p>
-          <input
-            className="mt-3 w-full rounded-xl border border-numo-border px-3 py-2 text-sm focus:border-numo-ink focus:outline-none"
-            onChange={(event) => setRepayAmount(event.target.value)}
-            placeholder="fyKESm amount"
-            type="number"
-            value={repayAmount}
-          />
-          <button
-            className="mt-3 w-full rounded-xl bg-numo-ink px-4 py-2 font-semibold text-sm text-white transition hover:opacity-90 disabled:opacity-50"
-            disabled={!vaultId || pendingAction !== null || repayAmount.length === 0}
-            onClick={() =>
-              runAction("repay", async () => {
-                const result = await repayFyKes(repayAmount);
-                return {
-                  status: `Tx 4 — Repaid fyKESm • ${result.txHash}`,
-                  steps: result.steps,
-                };
-              })
-            }
-            type="button"
-          >
-            {pendingAction === "repay" ? "Repaying..." : "Repay fyKESm"}
-          </button>
-        </div>
-
-        <div className="rounded-2xl border border-numo-border bg-white p-4 shadow-sm md:col-span-2">
-          <h3 className="font-semibold text-numo-ink text-sm">5. Withdraw USDT</h3>
-          <p className="mt-1 text-numo-muted text-xs">
-            Withdraw remaining collateral after repayment.
-          </p>
-          <div className="mt-3 flex flex-col gap-3 md:flex-row">
-            <input
-              className="w-full rounded-xl border border-numo-border px-3 py-2 text-sm focus:border-numo-ink focus:outline-none"
-              onChange={(event) => setWithdrawAmount(event.target.value)}
-              placeholder="USDT amount"
-              type="number"
-              value={withdrawAmount}
-            />
-            <button
-              className="w-full rounded-xl bg-numo-ink px-4 py-2 font-semibold text-sm text-white transition hover:opacity-90 disabled:opacity-50 md:w-auto md:min-w-[180px]"
-              disabled={!vaultId || pendingAction !== null || withdrawAmount.length === 0}
-              onClick={() =>
-                runAction("withdraw", async () => {
-                  const result = await withdrawUsdt(withdrawAmount);
-                  return {
-                    status: `Tx 5 — Withdrew USDT • ${result.txHash}`,
-                    steps: result.steps,
-                  };
-                })
-              }
-              type="button"
-            >
-              {pendingAction === "withdraw" ? "Withdrawing..." : "Withdraw USDT"}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {status ? (
-        <div className="mt-4 rounded-2xl border border-numo-border bg-numo-pill px-4 py-3 text-numo-ink text-xs">
-          <div>{status}</div>
-          {steps.length > 0 ? (
-            <div className="mt-2 space-y-1 text-[11px] text-numo-muted">
-              <div>USDT has 6 decimals: 10 USDT = 10,000,000.</div>
-              {steps.map((step) => (
-                <div key={step}>• {step}</div>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </div>
+    <BorrowFormView
+      borrowInput={borrowInput}
+      borrowBalanceLabel={kesBalanceLabel}
+      borrowTokenSymbol="KESm"
+      borrowValueLabel="Borrow KESm (we swap from fyKESm at pool price)."
+      className={className}
+      collateralBalanceLabel={collateralBalanceLabel}
+      collateralInput={collateralInput}
+      collateralUsdLabel={collateralInput || "0"}
+      diagnostics={{
+        appChainId,
+        lastError,
+        rpcUrl: CELO_RPC_URL,
+        userAddress,
+        usdtBalance: usdtBalance === null ? "—" : formatUnits(usdtBalance, usdtDecimals),
+        usdtBalanceRaw: usdtBalance === null ? "—" : usdtBalance.toString(),
+        usdtDecimals,
+        usdtToken: BORROW_CONFIG.tokens.usdt,
+      }}
+      ltvLabel={ltvPercent === null ? "—" : `${ltvPercent.toFixed(2)}%`}
+      maxCollateralDisabled={usdtBalance === null || usdtBalance === 0n}
+      onBorrowChange={(value) => setBorrowInput(value)}
+      onCollateralChange={(value) => setCollateralInput(value)}
+      onMaxCollateral={() => {
+        if (!maxCollateralLabel) {
+          return;
+        }
+        setCollateralInput(maxCollateralLabel);
+      }}
+      onSubmit={() =>
+        void submitBorrowPosition({
+          parsedBorrowKes,
+          parsedCollateral,
+          refetch,
+          setIsSubmitting,
+          setTxHash,
+          setTxStatus,
+          setVaultId,
+          storageKey,
+          usdtAllowance,
+          userAddress,
+          vaultId,
+          walletClient,
+        })
+      }
+      submitDisabled={Boolean(submitError) || isSubmitting}
+      submitLabel={isSubmitting ? "Submitting…" : (submitError ?? "Supply and Borrow")}
+      txHash={txHash}
+      txStatus={txStatus}
+      vaultReady={Boolean(vaultId)}
+    />
   );
 }

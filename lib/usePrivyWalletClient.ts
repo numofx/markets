@@ -10,6 +10,8 @@ import { celo } from "viem/chains";
 type UsePrivyWalletClientResult = {
   ready: boolean;
   wallet: ConnectedWallet | null;
+  chainId: number | null;
+  isCelo: boolean;
   provider: EIP1193Provider | null;
   walletClient: WalletClient | null;
   error: Error | null;
@@ -53,6 +55,9 @@ export function usePrivyWalletClient(): UsePrivyWalletClientResult {
   const [provider, setProvider] = useState<EIP1193Provider | null>(null);
   const [walletClient, setWalletClient] = useState<WalletClient | null>(null);
   const [error, setError] = useState<Error | null>(null);
+
+  const chainId = parseChainId(wallet?.chainId);
+  const isCelo = chainId === celo.id;
 
   useEffect(() => {
     const connectedWallet =
@@ -101,7 +106,9 @@ export function usePrivyWalletClient(): UsePrivyWalletClientResult {
   }, [wallet]);
 
   return {
+    chainId,
     error,
+    isCelo,
     provider,
     ready,
     wallet,
