@@ -7,12 +7,12 @@ import { PoolsCard } from "@/ui/PoolsCard";
 import { PositionsCard } from "@/ui/PositionsCard";
 import { TradeCard } from "@/ui/TradeCard";
 
-const GLOBAL_TABS = ["Trade", "Borrow", "Pools", "Positions"] as const;
+const GLOBAL_TABS = ["Lend", "Borrow", "Pools", "Positions"] as const;
 
 type TabValue = (typeof GLOBAL_TABS)[number];
 
 export function AppShell() {
-  const [activeTab, setActiveTab] = useState<TabValue>("Trade");
+  const [activeTab, setActiveTab] = useState<TabValue>("Lend");
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-numo-cream to-numo-sand">
@@ -22,7 +22,7 @@ export function AppShell() {
         onTabChange={(value) => setActiveTab(value as TabValue)}
       />
       <main className="mx-auto flex w-full max-w-6xl flex-col items-center px-4 py-16">
-        {activeTab === "Trade" ? <TradeCard /> : null}
+        {activeTab === "Lend" ? <TradeCard /> : null}
         {activeTab === "Borrow" ? <BorrowCard /> : null}
         {activeTab === "Pools" ? <PoolsCard /> : null}
         {activeTab === "Positions" ? <PositionsCard /> : null}
