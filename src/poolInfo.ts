@@ -10,7 +10,6 @@ export const CELO_YIELD_POOL = {
     address: "0x2EcECD30c115B6F1eA612205A04cf3cF77049503",
     symbol: "fyKESm",
   },
-  maturityDate: "2025-12-31",
   poolAddress: "0x483D89802E0B780C03D1647C98031694f2fD743D",
   stats: {
     oneDayVolumeOverTvl: null,

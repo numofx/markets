@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { cn } from "@/lib/cn";
+import { usePoolReads } from "@/lib/usePoolReads";
 import { CELO_YIELD_POOL } from "@/src/poolInfo";
 
 type PoolsCardProps = {
@@ -41,8 +42,22 @@ function formatPercent(value: number | null) {
   return `${value.toFixed(2)}%`;
 }
 
+function formatMaturityDateLabel(maturitySeconds: number) {
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    timeZone: "UTC",
+    year: "numeric",
+  }).format(new Date(maturitySeconds * 1000));
+}
+
 export function PoolsCard({ className }: PoolsCardProps) {
+  const { maturity } = usePoolReads();
   const poolName = `${CELO_YIELD_POOL.baseToken.symbol}/${CELO_YIELD_POOL.fyToken.symbol}`;
+  const maturityLabel =
+    typeof maturity === "number" && Number.isFinite(maturity)
+      ? formatMaturityDateLabel(maturity)
+      : "—";
 
   return (
     <div
@@ -117,9 +132,7 @@ export function PoolsCard({ className }: PoolsCardProps) {
               <td className="whitespace-nowrap px-4 py-5 text-numo-ink">
                 {CELO_YIELD_POOL.feeTier}
               </td>
-              <td className="whitespace-nowrap px-4 py-5 text-numo-ink">
-                {CELO_YIELD_POOL.maturityDate}
-              </td>
+              <td className="whitespace-nowrap px-4 py-5 text-numo-ink">{maturityLabel}</td>
               <td className="whitespace-nowrap px-4 py-5 text-right text-numo-ink">
                 {formatUsd(CELO_YIELD_POOL.stats.tvlUsd)}
               </td>
