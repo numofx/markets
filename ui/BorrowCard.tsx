@@ -1,4 +1,4 @@
-import { BorrowForm } from "@/components/BorrowForm";
+import { BorrowFixedRate } from "@/components/BorrowFixedRate";
 import { cn } from "@/lib/cn";
 
 type BorrowCardProps = {
@@ -6,5 +6,5 @@ type BorrowCardProps = {
 };
 
 export function BorrowCard({ className }: BorrowCardProps) {
-  return <BorrowForm className={cn(className)} />;
+  return <BorrowFixedRate className={cn(className)} />;
 }
