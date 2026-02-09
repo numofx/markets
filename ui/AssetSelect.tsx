@@ -1,8 +1,8 @@
 "use client";
 
 import { Check, ChevronDown } from "lucide-react";
-import { useEffect, useState } from "react";
 import Image from "next/image";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 
 type AssetOption = {
@@ -19,7 +19,13 @@ type AssetSelectProps = {
   headerLabel?: string;
 };
 
-export function AssetSelect({ options, value, onChange, className, headerLabel }: AssetSelectProps) {
+export function AssetSelect({
+  options,
+  value,
+  onChange,
+  className,
+  headerLabel,
+}: AssetSelectProps) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<AssetOption["code"]>(value ?? options[0].code);
 
@@ -65,7 +71,7 @@ export function AssetSelect({ options, value, onChange, className, headerLabel }
                   "flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm transition",
                   option.code === active.code
                     ? "bg-numo-pill font-semibold text-numo-ink"
-                    : "text-numo-ink hover:bg-numo-pill",
+                    : "text-numo-ink hover:bg-numo-pill"
                 )}
                 key={option.code}
                 onClick={() => {

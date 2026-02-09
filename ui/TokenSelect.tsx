@@ -14,7 +14,7 @@ export function TokenSelect({ symbol, label, className }: TokenSelectProps) {
     <button
       className={cn(
         "flex items-center gap-2 rounded-full border border-numo-border bg-white px-3 py-2 font-semibold text-numo-ink text-sm shadow-sm",
-        className,
+        className
       )}
       type="button"
     >

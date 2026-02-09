@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { cn } from "@/lib/cn";
 
 type PillTabsProps = {
@@ -21,18 +21,17 @@ export function PillTabs({
   onChange,
 }: PillTabsProps) {
   const isControlled = typeof value !== "undefined";
-  const tabsKey = useMemo(() => tabs.join("|"), [tabs]);
-  const [activeTab, setActiveTab] = useState(value ?? defaultValue ?? tabs[0]);
+  const firstTab = tabs[0];
+  const [activeTab, setActiveTab] = useState(value ?? defaultValue ?? firstTab);
 
   useEffect(() => {
     if (!isControlled) {
       return;
     }
 
-    const nextTab =
-      value !== undefined && tabs.includes(value) ? value : tabs[0];
+    const nextTab = value !== undefined && tabs.includes(value) ? value : firstTab;
     setActiveTab(nextTab);
-  }, [isControlled, value, tabsKey]);
+  }, [firstTab, isControlled, tabs, value]);
 
   useEffect(() => {
     if (isControlled) {
@@ -44,18 +43,16 @@ export function PillTabs({
     }
 
     const nextTab =
-      defaultValue !== undefined && tabs.includes(defaultValue)
-        ? defaultValue
-        : tabs[0];
+      defaultValue !== undefined && tabs.includes(defaultValue) ? defaultValue : firstTab;
     setActiveTab(nextTab);
-  }, [isControlled, activeTab, defaultValue, tabsKey]);
+  }, [activeTab, defaultValue, firstTab, isControlled, tabs]);
 
   return (
     <div
       className={cn(
         "flex items-center gap-1 rounded-full bg-numo-pill p-1",
         size === "sm" ? "text-xs" : "text-sm",
-        className,
+        className
       )}
       role="tablist"
     >
@@ -66,7 +63,7 @@ export function PillTabs({
             size === "sm" ? "px-3" : "px-4",
             activeTab === tab
               ? "bg-numo-ink text-white shadow-sm"
-              : "text-numo-muted hover:text-numo-ink",
+              : "text-numo-muted hover:text-numo-ink"
           )}
           key={tab}
           onClick={() => {

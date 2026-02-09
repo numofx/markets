@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import type { Chain, WalletClient } from "viem";
 import { createWalletClient, custom } from "viem";
 import { celo } from "viem/chains";
+import { useSoftWalletDisconnect } from "@/lib/useSoftWalletDisconnect";
 
 type UsePrivyWalletClientResult = {
   ready: boolean;
@@ -55,18 +56,22 @@ export function usePrivyWalletClient(): UsePrivyWalletClientResult {
   const [provider, setProvider] = useState<EIP1193Provider | null>(null);
   const [walletClient, setWalletClient] = useState<WalletClient | null>(null);
   const [error, setError] = useState<Error | null>(null);
+  const { softDisconnected } = useSoftWalletDisconnect();
 
   const chainId = parseChainId(wallet?.chainId);
   const isCelo = chainId === celo.id;
 
   useEffect(() => {
+    if (softDisconnected) {
+      setWallet(null);
+      return;
+    }
+    // Only treat a wallet as "selected" once it is actually connected.
+    // Avoids accidentally interacting with whatever injected wallet happens to be present.
     const connectedWallet =
-      wallets.find((item) => item.type === "ethereum" && item.isConnected) ??
-      wallets.find((item) => item.type === "ethereum" && item.address) ??
-      wallets.find((item) => item.type === "ethereum") ??
-      null;
+      wallets.find((item) => item.type === "ethereum" && item.isConnected) ?? null;
     setWallet(connectedWallet);
-  }, [wallets]);
+  }, [softDisconnected, wallets]);
 
   useEffect(() => {
     let cancelled = false;

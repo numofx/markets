@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from "react";
 import type { Address } from "viem";
-import { publicClient } from "@/lib/celoClients";
 import { erc20Abi } from "@/lib/abi/erc20";
 import { poolAbi } from "@/lib/abi/pool";
+import { publicClient } from "@/lib/celoClients";
 import { CELO_YIELD_POOL } from "@/src/poolInfo";
 
 type UsePoolReadsResult = {
@@ -45,22 +45,22 @@ async function readPoolSnapshot(userAddress?: Address): Promise<PoolSnapshot> {
     await publicClient.multicall({
       allowFailure: false,
       contracts: [
-        { address: poolAddress, abi: poolAbi, functionName: "baseToken" },
-        { address: poolAddress, abi: poolAbi, functionName: "fyToken" },
-        { address: poolAddress, abi: poolAbi, functionName: "baseDecimals" },
-        { address: poolAddress, abi: poolAbi, functionName: "maturity" },
-        { address: poolAddress, abi: poolAbi, functionName: "getBaseBalance" },
-        { address: poolAddress, abi: poolAbi, functionName: "getFYTokenBalance" },
+        { abi: poolAbi, address: poolAddress, functionName: "baseToken" },
+        { abi: poolAbi, address: poolAddress, functionName: "fyToken" },
+        { abi: poolAbi, address: poolAddress, functionName: "baseDecimals" },
+        { abi: poolAbi, address: poolAddress, functionName: "maturity" },
+        { abi: poolAbi, address: poolAddress, functionName: "getBaseBalance" },
+        { abi: poolAbi, address: poolAddress, functionName: "getFYTokenBalance" },
       ],
     });
 
   const [baseSymbol, fySymbol, baseTokenDecimals, fyTokenDecimals] = await publicClient.multicall({
     allowFailure: false,
     contracts: [
-      { address: baseToken, abi: erc20Abi, functionName: "symbol" },
-      { address: fyToken, abi: erc20Abi, functionName: "symbol" },
-      { address: baseToken, abi: erc20Abi, functionName: "decimals" },
-      { address: fyToken, abi: erc20Abi, functionName: "decimals" },
+      { abi: erc20Abi, address: baseToken, functionName: "symbol" },
+      { abi: erc20Abi, address: fyToken, functionName: "symbol" },
+      { abi: erc20Abi, address: baseToken, functionName: "decimals" },
+      { abi: erc20Abi, address: fyToken, functionName: "decimals" },
     ],
   });
 
@@ -70,8 +70,8 @@ async function readPoolSnapshot(userAddress?: Address): Promise<PoolSnapshot> {
     const [baseBal, fyBal] = await publicClient.multicall({
       allowFailure: false,
       contracts: [
-        { address: baseToken, abi: erc20Abi, functionName: "balanceOf", args: [userAddress] },
-        { address: fyToken, abi: erc20Abi, functionName: "balanceOf", args: [userAddress] },
+        { abi: erc20Abi, address: baseToken, args: [userAddress], functionName: "balanceOf" },
+        { abi: erc20Abi, address: fyToken, args: [userAddress], functionName: "balanceOf" },
       ],
     });
     userBaseBal = baseBal;
@@ -79,14 +79,14 @@ async function readPoolSnapshot(userAddress?: Address): Promise<PoolSnapshot> {
   }
 
   return {
-    baseToken,
-    fyToken,
-    baseDecimals,
-    maturity,
     baseBalance,
-    fyBalance,
+    baseDecimals,
     baseSymbol,
+    baseToken,
+    fyBalance,
     fySymbol,
+    fyToken,
+    maturity,
     tokenDecimals: [Number(baseTokenDecimals), Number(fyTokenDecimals)],
     userBaseBal,
     userFyBal,
@@ -96,54 +96,36 @@ async function readPoolSnapshot(userAddress?: Address): Promise<PoolSnapshot> {
 export function usePoolReads(userAddress?: Address): UsePoolReadsResult {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
-  const [baseToken, setBaseToken] = useState<Address | null>(null);
-  const [fyToken, setFyToken] = useState<Address | null>(null);
-  const [poolBaseBalance, setPoolBaseBalance] = useState<bigint | null>(null);
-  const [poolFyBalance, setPoolFyBalance] = useState<bigint | null>(null);
-  const [maturity, setMaturity] = useState<number | null>(null);
-  const [baseDecimals, setBaseDecimals] = useState<number | null>(null);
-  const [fyDecimals, setFyDecimals] = useState<number | null>(null);
-  const [baseSymbol, setBaseSymbol] = useState<string | null>(null);
-  const [fySymbol, setFySymbol] = useState<string | null>(null);
-  const [userBaseBal, setUserBaseBal] = useState<bigint | null>(null);
-  const [userFyBal, setUserFyBal] = useState<bigint | null>(null);
+  const [snapshot, setSnapshot] = useState<PoolSnapshot | null>(null);
   const [refreshIndex, setRefreshIndex] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
 
-    const load = async () => {
-      try {
-        setLoading(true);
-        const snapshot = await readPoolSnapshot(userAddress);
+    // Refetch signal for this effect.
+    void refreshIndex;
+
+    setLoading(true);
+    setError(null);
+
+    void readPoolSnapshot(userAddress)
+      .then((next) => {
         if (cancelled) {
           return;
         }
-        setBaseToken(snapshot.baseToken);
-        setFyToken(snapshot.fyToken);
-        setPoolBaseBalance(snapshot.baseBalance);
-        setPoolFyBalance(snapshot.fyBalance);
-        setMaturity(snapshot.maturity);
-        setBaseDecimals(Number(snapshot.baseDecimals));
-        setFyDecimals(snapshot.tokenDecimals[1]);
-        setBaseSymbol(snapshot.baseSymbol);
-        setFySymbol(snapshot.fySymbol);
-        setUserBaseBal(snapshot.userBaseBal ?? null);
-        setUserFyBal(snapshot.userFyBal ?? null);
-        setError(null);
-      } catch (caught) {
+        setSnapshot(next);
+      })
+      .catch((caught) => {
         if (cancelled) {
           return;
         }
         setError(caught instanceof Error ? caught : new Error("Failed to load pool data"));
-      } finally {
+      })
+      .finally(() => {
         if (!cancelled) {
           setLoading(false);
         }
-      }
-    };
-
-    void load();
+      });
 
     return () => {
       cancelled = true;
@@ -151,19 +133,19 @@ export function usePoolReads(userAddress?: Address): UsePoolReadsResult {
   }, [refreshIndex, userAddress]);
 
   return {
-    loading,
+    baseDecimals: snapshot ? Number(snapshot.baseDecimals) : null,
+    baseSymbol: snapshot?.baseSymbol ?? null,
+    baseToken: snapshot?.baseToken ?? null,
     error,
-    baseToken,
-    fyToken,
-    poolBaseBalance,
-    poolFyBalance,
-    maturity,
-    baseDecimals,
-    fyDecimals,
-    baseSymbol,
-    fySymbol,
-    userBaseBal,
-    userFyBal,
+    fyDecimals: snapshot ? snapshot.tokenDecimals[1] : null,
+    fySymbol: snapshot?.fySymbol ?? null,
+    fyToken: snapshot?.fyToken ?? null,
+    loading,
+    maturity: snapshot?.maturity ?? null,
+    poolBaseBalance: snapshot?.baseBalance ?? null,
+    poolFyBalance: snapshot?.fyBalance ?? null,
     refetch: () => setRefreshIndex((value) => value + 1),
+    userBaseBal: snapshot?.userBaseBal ?? null,
+    userFyBal: snapshot?.userFyBal ?? null,
   };
 }

@@ -1,4 +1,3 @@
-import { Bell, Menu } from "lucide-react";
 import Image from "next/image";
 import { PrivyConnectPill } from "@/components/PrivyConnectPill";
 import { cn } from "@/lib/cn";
@@ -36,20 +35,6 @@ export function NavBar({ items, className, activeTab, onTabChange }: NavBarProps
 
         <div className="flex items-center gap-2 justify-self-end">
           <PrivyConnectPill />
-          <button
-            aria-label="Notifications"
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-numo-border bg-white text-numo-muted shadow-sm"
-            type="button"
-          >
-            <Bell className="h-4 w-4" />
-          </button>
-          <button
-            aria-label="Menu"
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-numo-border bg-white text-numo-muted shadow-sm"
-            type="button"
-          >
-            <Menu className="h-4 w-4" />
-          </button>
         </div>
       </div>
     </header>

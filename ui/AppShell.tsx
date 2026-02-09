@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { BorrowCard } from "@/ui/BorrowCard";
 import { NavBar } from "@/ui/NavBar";
-import { PositionsCard } from "@/ui/PositionsCard";
 import { PoolsCard } from "@/ui/PoolsCard";
+import { PositionsCard } from "@/ui/PositionsCard";
 import { TradeCard } from "@/ui/TradeCard";
 
 const GLOBAL_TABS = ["Trade", "Borrow", "Pools", "Positions"] as const;

@@ -4,10 +4,10 @@ import { useEffect, useState } from "react";
 import type { Address, Hex, WalletClient } from "viem";
 import { formatUnits, parseUnits } from "viem";
 import { BorrowFormView } from "@/components/BorrowFormView";
+import { CELO_RPC_URL, publicClient } from "@/lib/celoClients";
 import { useBorrowVaultId } from "@/lib/useBorrowVaultId";
 import { useBorrowWalletData } from "@/lib/useBorrowWalletData";
 import { usePrivyAddress } from "@/lib/usePrivyAddress";
-import { publicClient, CELO_RPC_URL } from "@/lib/celoClients";
 import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
 import { approveUsdtJoin, buildVault, pour, sellFyKes } from "@/src/borrow-actions";
 import { BORROW_CONFIG } from "@/src/borrow-config";
@@ -247,8 +247,8 @@ export function BorrowForm({ className }: BorrowFormProps) {
 
   return (
     <BorrowFormView
-      borrowInput={borrowInput}
       borrowBalanceLabel={kesBalanceLabel}
+      borrowInput={borrowInput}
       borrowTokenSymbol="KESm"
       borrowValueLabel="Borrow KESm (we swap from fyKESm at pool price)."
       className={className}
@@ -259,11 +259,11 @@ export function BorrowForm({ className }: BorrowFormProps) {
         appChainId,
         lastError,
         rpcUrl: CELO_RPC_URL,
-        userAddress,
         usdtBalance: usdtBalance === null ? "—" : formatUnits(usdtBalance, usdtDecimals),
         usdtBalanceRaw: usdtBalance === null ? "—" : usdtBalance.toString(),
         usdtDecimals,
         usdtToken: BORROW_CONFIG.tokens.usdt,
+        userAddress,
       }}
       ltvLabel={ltvPercent === null ? "—" : `${ltvPercent.toFixed(2)}%`}
       maxCollateralDisabled={usdtBalance === null || usdtBalance === 0n}

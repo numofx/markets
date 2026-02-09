@@ -68,10 +68,10 @@ async function fetchBorrowWalletData(params: {
   ]);
 
   return {
-    kesBalance: pickResult(balancesResults[2], null as bigint | null),
-    kesDecimals: pickResult(decimalsResults[2], 18),
     fyBalance: pickResult(balancesResults[1], null as bigint | null),
     fyDecimals: pickResult(decimalsResults[1], 18),
+    kesBalance: pickResult(balancesResults[2], null as bigint | null),
+    kesDecimals: pickResult(decimalsResults[2], 18),
     lastError: null,
     usdtAllowance: pickResult(allowanceResults[0], null as bigint | null),
     usdtBalance: pickResult(balancesResults[0], null as bigint | null),
@@ -87,10 +87,10 @@ export function useBorrowWalletData(params: {
   usdtToken: Address;
 }) {
   const [data, setData] = useState<BorrowWalletData>({
-    kesBalance: null,
-    kesDecimals: 18,
     fyBalance: null,
     fyDecimals: 18,
+    kesBalance: null,
+    kesDecimals: 18,
     lastError: null,
     usdtAllowance: null,
     usdtBalance: null,
@@ -116,8 +116,8 @@ export function useBorrowWalletData(params: {
     if (!params.userAddress) {
       setData((prev) => ({
         ...prev,
-        kesBalance: null,
         fyBalance: null,
+        kesBalance: null,
         lastError: null,
         usdtAllowance: null,
         usdtBalance: null,
@@ -141,7 +141,8 @@ export function useBorrowWalletData(params: {
         if (cancelled) {
           return;
         }
-        const message = caught instanceof Error ? caught.message : "Failed to read wallet balances.";
+        const message =
+          caught instanceof Error ? caught.message : "Failed to read wallet balances.";
         setData((prev) => ({ ...prev, lastError: message }));
       }
     })();

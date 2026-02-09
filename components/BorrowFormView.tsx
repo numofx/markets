@@ -18,7 +18,9 @@ function DiagnosticsBlock({
       {diagnostics.usdtDecimals !== undefined ? (
         <div>USDT decimals: {diagnostics.usdtDecimals}</div>
       ) : null}
-      {diagnostics.usdtBalance !== undefined ? <div>USDT balance: {diagnostics.usdtBalance}</div> : null}
+      {diagnostics.usdtBalance !== undefined ? (
+        <div>USDT balance: {diagnostics.usdtBalance}</div>
+      ) : null}
       {diagnostics.usdtBalanceRaw !== undefined ? (
         <div>USDT balance raw: {diagnostics.usdtBalanceRaw}</div>
       ) : null}
@@ -111,30 +113,30 @@ export function BorrowFormView(props: BorrowFormViewProps) {
           </div>
         </div>
 
-	        <div className="rounded-3xl border border-numo-border bg-white p-5 shadow-sm">
-	          <div className="flex items-start justify-between gap-4">
-	            <div className="min-w-0 flex-1">
-	              <div className="text-numo-muted text-sm">Borrow ({props.borrowTokenSymbol})</div>
-	              <div className="mt-2 text-5xl text-numo-ink">
-	                <input
-	                  className="w-full bg-transparent outline-none"
-	                  inputMode="decimal"
+        <div className="rounded-3xl border border-numo-border bg-white p-5 shadow-sm">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <div className="text-numo-muted text-sm">Borrow ({props.borrowTokenSymbol})</div>
+              <div className="mt-2 text-5xl text-numo-ink">
+                <input
+                  className="w-full bg-transparent outline-none"
+                  inputMode="decimal"
                   onChange={(event) => props.onBorrowChange(event.target.value)}
                   placeholder="0"
                   value={props.borrowInput}
                 />
               </div>
-	              <div className="mt-3 text-numo-muted text-sm">{props.borrowValueLabel}</div>
-	            </div>
-	            <div className="flex flex-col items-end gap-2">
-	              <div className="inline-flex items-center gap-2 rounded-full border border-numo-border bg-white px-3 py-1 text-numo-ink text-sm shadow-sm">
-	                <span className="font-semibold">{props.borrowTokenSymbol}</span>
-	              </div>
-	              <div className="text-numo-muted text-xs">{props.borrowBalanceLabel}</div>
-	              <button
-	                className="rounded-full bg-numo-pill px-4 py-2 text-numo-ink text-xs opacity-50"
-	                disabled
-	                type="button"
+              <div className="mt-3 text-numo-muted text-sm">{props.borrowValueLabel}</div>
+            </div>
+            <div className="flex flex-col items-end gap-2">
+              <div className="inline-flex items-center gap-2 rounded-full border border-numo-border bg-white px-3 py-1 text-numo-ink text-sm shadow-sm">
+                <span className="font-semibold">{props.borrowTokenSymbol}</span>
+              </div>
+              <div className="text-numo-muted text-xs">{props.borrowBalanceLabel}</div>
+              <button
+                className="rounded-full bg-numo-pill px-4 py-2 text-numo-ink text-xs opacity-50"
+                disabled
+                type="button"
               >
                 MAX
               </button>
@@ -142,15 +144,15 @@ export function BorrowFormView(props: BorrowFormViewProps) {
           </div>
         </div>
 
-	        <div className="rounded-3xl border border-numo-border bg-white p-5 shadow-sm">
-	          <div className="flex items-center justify-between text-numo-ink">
-	            <div className="text-sm">Collateral (USDT)</div>
-	            <div className="text-sm">{props.collateralInput || "0"}</div>
-	          </div>
-	          <div className="mt-3 flex items-center justify-between text-numo-ink">
-	            <div className="text-sm">Loan ({props.borrowTokenSymbol})</div>
-	            <div className="text-sm">{props.borrowInput || "0"}</div>
-	          </div>
+        <div className="rounded-3xl border border-numo-border bg-white p-5 shadow-sm">
+          <div className="flex items-center justify-between text-numo-ink">
+            <div className="text-sm">Collateral (USDT)</div>
+            <div className="text-sm">{props.collateralInput || "0"}</div>
+          </div>
+          <div className="mt-3 flex items-center justify-between text-numo-ink">
+            <div className="text-sm">Loan ({props.borrowTokenSymbol})</div>
+            <div className="text-sm">{props.borrowInput || "0"}</div>
+          </div>
           <div className="mt-3 flex items-center justify-between text-numo-ink">
             <div className="text-sm">LTV (est.)</div>
             <div className="text-sm">{props.ltvLabel}</div>
@@ -186,9 +188,7 @@ export function BorrowFormView(props: BorrowFormViewProps) {
         <details className="rounded-3xl border border-numo-border bg-white/50 p-5 text-numo-muted text-xs shadow-sm">
           <summary className="cursor-pointer select-none text-numo-ink">Advanced</summary>
           <div className="mt-3 grid gap-1">
-            {props.diagnostics ? (
-              <DiagnosticsBlock diagnostics={props.diagnostics} />
-            ) : null}
+            {props.diagnostics ? <DiagnosticsBlock diagnostics={props.diagnostics} /> : null}
             <div>SeriesId: {BORROW_CONFIG.seriesId.fyKesm}</div>
             <div>Ilk (USDT): {BORROW_CONFIG.ilk.usdt}</div>
             <div>Ladle: {BORROW_CONFIG.core.ladle}</div>

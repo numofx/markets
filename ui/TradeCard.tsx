@@ -1,7 +1,7 @@
 "use client";
 
-import { cn } from "@/lib/cn";
 import { TradeForm } from "@/components/TradeForm";
+import { cn } from "@/lib/cn";
 
 type TradeCardProps = {
   className?: string;

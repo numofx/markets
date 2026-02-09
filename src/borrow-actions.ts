@@ -1,8 +1,8 @@
 import type { Address, Hex, WalletClient } from "viem";
 import { celo } from "viem/chains";
 import { erc20Abi } from "@/lib/abi/erc20";
-import { poolAbi } from "@/lib/abi/pool";
 import { ladleAbi } from "@/lib/abi/ladle";
+import { poolAbi } from "@/lib/abi/pool";
 import { publicClient } from "@/lib/celoClients";
 import { BORROW_CONFIG } from "@/src/borrow-config";
 import { CELO_YIELD_POOL } from "@/src/poolInfo";

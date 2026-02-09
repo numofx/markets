@@ -1,17 +1,17 @@
 "use client";
 
 import Image from "next/image";
-import { CELO_YIELD_POOL } from "@/src/poolInfo";
 import { cn } from "@/lib/cn";
+import { CELO_YIELD_POOL } from "@/src/poolInfo";
 
 type PoolsCardProps = {
   className?: string;
 };
 
 const USD_FORMAT = new Intl.NumberFormat("en-US", {
-  style: "currency",
   currency: "USD",
   maximumFractionDigits: 2,
+  style: "currency",
 });
 
 function shortAddress(address: string) {
@@ -48,7 +48,7 @@ export function PoolsCard({ className }: PoolsCardProps) {
     <div
       className={cn(
         "w-full rounded-3xl border border-numo-border bg-white/80 p-6 shadow-lg backdrop-blur",
-        className,
+        className
       )}
     >
       <div className="flex flex-wrap items-center justify-between gap-4">
