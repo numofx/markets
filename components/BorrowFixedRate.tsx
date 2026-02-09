@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronDown, Waves } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, ThumbsDown, Waves } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import type { Address, Hex, WalletClient } from "viem";
@@ -19,8 +19,16 @@ type BorrowFixedRateProps = {
   className?: string;
 };
 
+type BorrowStep = "borrow" | "collateral";
+
 type TokenOption = {
   id: "USDT" | "KESm";
+  label: string;
+  subtitle: string;
+};
+
+type CollateralOption = {
+  id: "USDT";
   label: string;
   subtitle: string;
 };
@@ -40,6 +48,10 @@ type MaturityOption = {
 const TOKENS: TokenOption[] = [
   { id: "USDT", label: "USDT", subtitle: "Tether USD" },
   { id: "KESm", label: "KESm", subtitle: "Kenyan Shilling" },
+];
+
+const COLLATERAL_OPTIONS: CollateralOption[] = [
+  { id: "USDT", label: "USDT", subtitle: "Tether USD" },
 ];
 
 const MATURITIES: MaturityOption[] = [
@@ -102,6 +114,21 @@ function TokenIcon({ tokenId }: { tokenId: TokenOption["id"] }) {
     <span className="inline-flex rounded-full bg-gradient-to-r from-fuchsia-500 via-cyan-400 to-lime-300 p-0.5">
       <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-sm">
         <Image alt={`${tokenId} token icon`} height={20} src={TOKEN_ICON_SRC[tokenId]} width={20} />
+      </span>
+    </span>
+  );
+}
+
+function CollateralIcon({ collateralId }: { collateralId: CollateralOption["id"] }) {
+  return (
+    <span className="inline-flex rounded-full bg-gradient-to-r from-fuchsia-500 via-cyan-400 to-lime-300 p-0.5">
+      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-sm">
+        <Image
+          alt={`${collateralId} token icon`}
+          height={20}
+          src={TOKEN_ICON_SRC[collateralId]}
+          width={20}
+        />
       </span>
     </span>
   );
@@ -328,18 +355,27 @@ function CollateralCard({
   usdtBalance,
   usdtDecimals,
   onMax,
+  collateralMenuOpen,
+  collateralMenuRef,
+  onToggleCollateralMenu,
+  onCloseCollateralMenu,
 }: {
   collateralInput: string;
   onCollateralChange: (value: string) => void;
   usdtBalance: bigint | null;
   usdtDecimals: number;
   onMax: () => void;
+  collateralMenuOpen: boolean;
+  collateralMenuRef: React.RefObject<HTMLDivElement | null>;
+  onToggleCollateralMenu: () => void;
+  onCloseCollateralMenu: () => void;
 }) {
+  const selectedCollateral = COLLATERAL_OPTIONS[0];
   return (
     <div className="mt-4 rounded-2xl border border-numo-border bg-white px-4 py-3 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="text-numo-muted text-xs">Collateral (USDT)</div>
+          <div className="text-numo-muted text-xs">Collateral</div>
           <input
             className="mt-2 w-full bg-transparent text-lg text-numo-ink outline-none placeholder:text-numo-border"
             inputMode="decimal"
@@ -351,14 +387,67 @@ function CollateralCard({
             Balance: {usdtBalance === null ? "—" : `${formatUnits(usdtBalance, usdtDecimals)} USDT`}
           </div>
         </div>
-        <button
-          className="rounded-full bg-numo-pill px-3 py-2 font-semibold text-numo-ink text-xs transition hover:opacity-90 disabled:opacity-50"
-          disabled={usdtBalance === null}
-          onClick={onMax}
-          type="button"
-        >
-          MAX
-        </button>
+        <div className="flex flex-col items-end gap-2">
+          <div className="relative" ref={collateralMenuRef}>
+            <button
+              aria-expanded={collateralMenuOpen}
+              aria-haspopup="menu"
+              className={cn(
+                "flex h-12 w-40 items-center justify-between gap-2 rounded-full border border-numo-border bg-white px-3 text-numo-ink shadow-sm",
+                "transition hover:bg-numo-pill/50"
+              )}
+              onClick={onToggleCollateralMenu}
+              type="button"
+            >
+              <span className="flex items-center gap-2">
+                <CollateralIcon collateralId={selectedCollateral.id} />
+                <span className="font-semibold text-sm">{selectedCollateral.label}</span>
+              </span>
+              <ChevronDown
+                className={cn(
+                  "h-4 w-4 text-numo-muted transition-transform",
+                  collateralMenuOpen ? "rotate-180" : "rotate-0"
+                )}
+              />
+            </button>
+
+            {collateralMenuOpen ? (
+              <div className="absolute right-0 z-10 mt-3 w-80 rounded-3xl border border-numo-border bg-white p-3 shadow-xl">
+                <div className="px-3 py-2 font-semibold text-numo-muted text-xs tracking-wide">
+                  SELECT STABLECOIN
+                </div>
+                {COLLATERAL_OPTIONS.map((option) => (
+                  <button
+                    className={cn(
+                      "flex w-full items-center justify-between rounded-2xl bg-numo-pill px-3 py-3 text-left text-numo-ink transition hover:bg-numo-pill/60"
+                    )}
+                    key={option.id}
+                    onClick={() => onCloseCollateralMenu()}
+                    type="button"
+                  >
+                    <span className="flex items-center gap-3">
+                      <CollateralIcon collateralId={option.id} />
+                      <span className="flex flex-col">
+                        <span className="font-semibold text-numo-ink text-sm">{option.label}</span>
+                        <span className="text-numo-muted text-sm">{option.subtitle}</span>
+                      </span>
+                    </span>
+                    <Check className="h-5 w-5 text-emerald-700" />
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          <button
+            className="rounded-full bg-numo-pill px-3 py-2 font-semibold text-numo-ink text-xs transition hover:opacity-90 disabled:opacity-50"
+            disabled={usdtBalance === null}
+            onClick={onMax}
+            type="button"
+          >
+            MAX
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -406,6 +495,87 @@ function SubmitSection({
   );
 }
 
+function BorrowAmountRow({
+  borrowInput,
+  onBorrowChange,
+  tokenMenuOpen,
+  tokenMenuRef,
+  selectedToken,
+  onToggleTokenMenu,
+  onSelectToken,
+  token,
+}: {
+  borrowInput: string;
+  onBorrowChange: (value: string) => void;
+  tokenMenuOpen: boolean;
+  tokenMenuRef: React.RefObject<HTMLDivElement | null>;
+  selectedToken: TokenOption | undefined;
+  onToggleTokenMenu: () => void;
+  onSelectToken: (id: TokenOption["id"]) => void;
+  token: TokenOption["id"];
+}) {
+  return (
+    <div className="mt-8 flex items-center gap-3">
+      <div className="flex-1">
+        <label className="sr-only" htmlFor="borrow-amount">
+          Amount
+        </label>
+        <input
+          className={cn(
+            "h-12 w-full rounded-2xl border border-numo-border bg-white px-4 text-numo-ink shadow-sm outline-none",
+            "placeholder:text-numo-border focus:border-numo-ink"
+          )}
+          id="borrow-amount"
+          inputMode="decimal"
+          onChange={(event) => onBorrowChange(event.target.value)}
+          placeholder={token === "KESm" ? "Enter amount" : "Coming soon"}
+          value={borrowInput}
+        />
+      </div>
+
+      <div className="relative" ref={tokenMenuRef}>
+        <TokenDropdown onToggle={onToggleTokenMenu} open={tokenMenuOpen} selected={selectedToken} />
+
+        {tokenMenuOpen ? (
+          <div
+            className="absolute left-0 z-10 mt-3 w-80 rounded-3xl border border-numo-border bg-white p-3 shadow-xl"
+            role="menu"
+          >
+            <div className="px-3 py-2 font-semibold text-numo-muted text-xs tracking-wide">
+              SELECT STABLECOIN
+            </div>
+            {TOKENS.map((option) => {
+              const isSelected = option.id === token;
+              return (
+                <button
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-2xl px-3 py-3 text-left text-numo-ink",
+                    "transition hover:bg-numo-pill/60",
+                    isSelected ? "bg-numo-pill" : "bg-transparent"
+                  )}
+                  key={option.id}
+                  onClick={() => onSelectToken(option.id)}
+                  role="menuitem"
+                  type="button"
+                >
+                  <span className="flex items-center gap-3">
+                    <TokenIcon tokenId={option.id} />
+                    <span className="flex flex-col">
+                      <span className="font-semibold text-numo-ink text-sm">{option.label}</span>
+                      <span className="text-numo-muted text-sm">{option.subtitle}</span>
+                    </span>
+                  </span>
+                  {isSelected ? <Check className="h-5 w-5 text-emerald-700" /> : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function getPreflightError(params: {
   isCelo: boolean;
   submitError: string | null;
@@ -420,6 +590,21 @@ function getPreflightError(params: {
   }
   if (!(params.parsedCollateral && params.parsedBorrowKes)) {
     return "Enter collateral and borrow amounts.";
+  }
+  return null;
+}
+
+function formatVaultId(vaultId: Hex) {
+  const clean = vaultId.toLowerCase();
+  return `${clean.slice(0, 10)}…${clean.slice(-6)}`;
+}
+
+function getBorrowStepError(token: TokenOption["id"], parsedBorrowKes: bigint | null) {
+  if (token !== "KESm") {
+    return "Borrowing USDT is not supported yet.";
+  }
+  if (!parsedBorrowKes) {
+    return "Enter amount to borrow.";
   }
   return null;
 }
@@ -519,16 +704,174 @@ async function handleBorrowSubmit(params: {
   params.setIsSubmitting(false);
 }
 
+function BorrowStepView(params: {
+  borrowInput: string;
+  onBorrowChange: (value: string) => void;
+  token: TokenOption["id"];
+  selectedToken: TokenOption | undefined;
+  tokenMenuOpen: boolean;
+  tokenMenuRef: React.RefObject<HTMLDivElement | null>;
+  onToggleTokenMenu: () => void;
+  onSelectToken: (id: TokenOption["id"]) => void;
+  selectedMaturityId: string;
+  onSelectMaturity: (id: string) => void;
+  canProceed: boolean;
+  borrowStepError: string | null;
+  onNext: () => void;
+}) {
+  return (
+    <>
+      <header>
+        <h2 className="bg-gradient-to-r from-teal-500 via-cyan-500 to-fuchsia-500 bg-clip-text font-semibold text-3xl text-transparent tracking-wide">
+          BORROW
+        </h2>
+        <p className="mt-2 text-numo-muted text-sm">Borrow stablecoins at a fixed rate</p>
+      </header>
+
+      <BorrowAmountRow
+        borrowInput={params.borrowInput}
+        onBorrowChange={params.onBorrowChange}
+        onSelectToken={params.onSelectToken}
+        onToggleTokenMenu={params.onToggleTokenMenu}
+        selectedToken={params.selectedToken}
+        token={params.token}
+        tokenMenuOpen={params.tokenMenuOpen}
+        tokenMenuRef={params.tokenMenuRef}
+      />
+
+      <MaturityGrid
+        onSelectMaturity={params.onSelectMaturity}
+        selectedMaturityId={params.selectedMaturityId}
+        tokenLabel={params.token}
+      />
+
+      <SubmitSection
+        canContinue={params.canProceed}
+        isSubmitting={false}
+        onSubmit={params.onNext}
+        submitError={params.borrowStepError}
+        txHash={null}
+        txStatus={null}
+      />
+    </>
+  );
+}
+
+function CollateralStepView(params: {
+  collateralInput: string;
+  onCollateralChange: (value: string) => void;
+  usdtBalance: bigint | null;
+  usdtDecimals: number;
+  onMaxCollateral: () => void;
+  collateralMenuOpen: boolean;
+  collateralMenuRef: React.RefObject<HTMLDivElement | null>;
+  onToggleCollateralMenu: () => void;
+  onCloseCollateralMenu: () => void;
+  vaultId: Hex | null;
+  useExistingVault: boolean;
+  onSelectExistingVault: () => void;
+  onSelectNewVault: () => void;
+  canSubmit: boolean;
+  isSubmitting: boolean;
+  onSubmit: () => void;
+  submitError: string | null;
+  txHash: Hex | null;
+  txStatus: string | null;
+  onBack: () => void;
+}) {
+  return (
+    <>
+      <button
+        aria-label="Back"
+        className="mb-4 inline-flex h-10 w-10 items-center justify-center rounded-full border border-numo-border bg-white text-numo-muted shadow-sm transition hover:bg-numo-pill/60"
+        onClick={params.onBack}
+        type="button"
+      >
+        <ArrowLeft className="h-4 w-4" />
+      </button>
+
+      <div className="grid grid-cols-2 items-center gap-4">
+        <div className="relative flex h-28 w-28 items-center justify-center">
+          <div className="absolute inset-0 rounded-full border-8 border-numo-pill" />
+          <ThumbsDown className="h-8 w-8 text-rose-500" />
+        </div>
+        <div className="text-center">
+          <div className="text-numo-muted text-sm">Collateralization</div>
+          <div className="font-semibold text-2xl text-numo-ink">0%</div>
+        </div>
+      </div>
+
+      <div className="mt-6 text-numo-muted text-xs">Amount of collateral to add</div>
+      <CollateralCard
+        collateralInput={params.collateralInput}
+        collateralMenuOpen={params.collateralMenuOpen}
+        collateralMenuRef={params.collateralMenuRef}
+        onCloseCollateralMenu={params.onCloseCollateralMenu}
+        onCollateralChange={params.onCollateralChange}
+        onMax={params.onMaxCollateral}
+        onToggleCollateralMenu={params.onToggleCollateralMenu}
+        usdtBalance={params.usdtBalance}
+        usdtDecimals={params.usdtDecimals}
+      />
+
+      <div className="mt-4">
+        <div className="text-numo-muted text-xs">Add to an existing vault</div>
+        <div className="mt-2 grid gap-2">
+          <button
+            className={cn(
+              "flex items-center justify-between rounded-2xl border border-numo-border bg-white px-4 py-3 text-left text-numo-ink shadow-sm transition",
+              params.useExistingVault ? "ring-2 ring-numo-ink/10" : "hover:bg-numo-pill/60",
+              params.vaultId ? "" : "opacity-50"
+            )}
+            disabled={!params.vaultId}
+            onClick={params.onSelectExistingVault}
+            type="button"
+          >
+            <span className="font-semibold text-sm">
+              Use Existing Vault {params.vaultId ? `(${formatVaultId(params.vaultId)})` : null}
+            </span>
+            {params.useExistingVault ? <Check className="h-5 w-5 text-emerald-700" /> : null}
+          </button>
+
+          <button
+            className={cn(
+              "flex items-center justify-between rounded-2xl border border-numo-border bg-white px-4 py-3 text-left text-numo-ink shadow-sm transition",
+              params.useExistingVault ? "hover:bg-numo-pill/60" : "ring-2 ring-numo-ink/10"
+            )}
+            onClick={params.onSelectNewVault}
+            type="button"
+          >
+            <span className="font-semibold text-sm">Create New Vault</span>
+            {params.useExistingVault ? null : <Check className="h-5 w-5 text-emerald-700" />}
+          </button>
+        </div>
+      </div>
+
+      <SubmitSection
+        canContinue={params.canSubmit}
+        isSubmitting={params.isSubmitting}
+        onSubmit={params.onSubmit}
+        submitError={params.submitError}
+        txHash={params.txHash}
+        txStatus={params.txStatus}
+      />
+    </>
+  );
+}
+
 export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
   const userAddress = usePrivyAddress();
   const { isCelo, walletClient } = usePrivyWalletClient();
 
+  const [step, setStep] = useState<BorrowStep>("borrow");
   const [collateralInput, setCollateralInput] = useState("");
   const [borrowInput, setBorrowInput] = useState("");
   const [token, setToken] = useState<TokenOption["id"]>("KESm");
   const [selectedMaturityId, setSelectedMaturityId] = useState<string>(MATURITIES[2]?.id ?? "");
   const [tokenMenuOpen, setTokenMenuOpen] = useState(false);
   const tokenMenuRef = useRef<HTMLDivElement | null>(null);
+  const [collateralMenuOpen, setCollateralMenuOpen] = useState(false);
+  const collateralMenuRef = useRef<HTMLDivElement | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [txStatus, setTxStatus] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<Hex | null>(null);
@@ -550,20 +893,39 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
   const parsedCollateral = safeParseAmount(collateralInput, usdtDecimals);
   const parsedBorrowKes = safeParseAmount(borrowInput, kesDecimals);
 
-  const validationError = getBorrowValidationError({
-    borrow: parsedBorrowKes,
-    collateral: parsedCollateral,
-    token,
-    usdtBalance,
-    userAddress,
-    walletClient,
-  });
-  const networkError = isCelo ? null : "Switch wallet network to Celo (42220).";
-  const submitError = networkError ?? validationError;
-  const canContinue = !submitError && Boolean(selectedMaturityId);
   const selectedToken = TOKENS.find((t) => t.id === token) ?? TOKENS[0];
 
   useDismissOnEscapeAndOutsideClick(tokenMenuOpen, tokenMenuRef, () => setTokenMenuOpen(false));
+  useDismissOnEscapeAndOutsideClick(collateralMenuOpen, collateralMenuRef, () =>
+    setCollateralMenuOpen(false)
+  );
+
+  const borrowStepError = getBorrowStepError(token, parsedBorrowKes);
+  const canProceed = Boolean(selectedMaturityId) && borrowStepError === null;
+
+  const submitError =
+    step !== "collateral"
+      ? null
+      : (() => {
+          const validationError = getBorrowValidationError({
+            borrow: parsedBorrowKes,
+            collateral: parsedCollateral,
+            token,
+            usdtBalance,
+            userAddress,
+            walletClient,
+          });
+          const networkError = isCelo ? null : "Switch wallet network to Celo (42220).";
+          return networkError ?? validationError;
+        })();
+  const canSubmit = Boolean(selectedMaturityId) && !submitError;
+
+  const [useExistingVault, setUseExistingVault] = useState<boolean>(true);
+  useEffect(() => {
+    setUseExistingVault(Boolean(vaultId));
+  }, [vaultId]);
+
+  const effectiveVaultId = useExistingVault ? vaultId : null;
 
   return (
     <div className={cn("w-full", className)}>
@@ -577,125 +939,75 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
         />
 
         <div className="relative rounded-3xl border border-numo-border bg-white/92 p-8 shadow-xl backdrop-blur">
-          <header>
-            <h2 className="bg-gradient-to-r from-teal-500 via-cyan-500 to-fuchsia-500 bg-clip-text font-semibold text-3xl text-transparent tracking-wide">
-              BORROW
-            </h2>
-            <p className="mt-2 text-numo-muted text-sm">Borrow stablecoins at a fixed rate</p>
-          </header>
-
-          <div className="mt-8 flex items-center gap-3">
-            <div className="flex-1">
-              <label className="sr-only" htmlFor="borrow-amount">
-                Amount
-              </label>
-              <input
-                className={cn(
-                  "h-12 w-full rounded-2xl border border-numo-border bg-white px-4 text-numo-ink shadow-sm outline-none",
-                  "placeholder:text-numo-border focus:border-numo-ink"
-                )}
-                id="borrow-amount"
-                inputMode="decimal"
-                onChange={(event) => setBorrowInput(event.target.value)}
-                placeholder={token === "KESm" ? "Enter amount" : "Coming soon"}
-                value={borrowInput}
-              />
-            </div>
-
-            <div className="relative" ref={tokenMenuRef}>
-              <TokenDropdown
-                onToggle={() => setTokenMenuOpen((value) => !value)}
-                open={tokenMenuOpen}
-                selected={selectedToken}
-              />
-
-              {tokenMenuOpen ? (
-                <div
-                  className="absolute left-0 z-10 mt-3 w-80 rounded-3xl border border-numo-border bg-white p-3 shadow-xl"
-                  role="menu"
-                >
-                  <div className="px-3 py-2 font-semibold text-numo-muted text-xs tracking-wide">
-                    SELECT STABLECOIN
-                  </div>
-                  {TOKENS.map((option) => {
-                    const isSelected = option.id === token;
-                    return (
-                      <button
-                        className={cn(
-                          "flex w-full items-center justify-between rounded-2xl px-3 py-3 text-left text-numo-ink",
-                          "transition hover:bg-numo-pill/60",
-                          isSelected ? "bg-numo-pill" : "bg-transparent"
-                        )}
-                        key={option.id}
-                        onClick={() => {
-                          setToken(option.id);
-                          setTokenMenuOpen(false);
-                        }}
-                        role="menuitem"
-                        type="button"
-                      >
-                        <span className="flex items-center gap-3">
-                          <TokenIcon tokenId={option.id} />
-                          <span className="flex flex-col">
-                            <span className="font-semibold text-numo-ink text-sm">
-                              {option.label}
-                            </span>
-                            <span className="text-numo-muted text-sm">{option.subtitle}</span>
-                          </span>
-                        </span>
-                        {isSelected ? <Check className="h-5 w-5 text-emerald-700" /> : null}
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          <CollateralCard
-            collateralInput={collateralInput}
-            onCollateralChange={(value) => setCollateralInput(value)}
-            onMax={() => {
-              if (usdtBalance === null) {
-                return;
-              }
-              setCollateralInput(formatUnits(usdtBalance, usdtDecimals));
-            }}
-            usdtBalance={usdtBalance}
-            usdtDecimals={usdtDecimals}
-          />
-
-          <MaturityGrid
-            onSelectMaturity={(id) => setSelectedMaturityId(id)}
-            selectedMaturityId={selectedMaturityId}
-            tokenLabel={token}
-          />
-
-          <SubmitSection
-            canContinue={canContinue}
-            isSubmitting={isSubmitting}
-            onSubmit={() => {
-              void handleBorrowSubmit({
-                isCelo,
-                parsedBorrowKes,
-                parsedCollateral,
-                refetch,
-                setIsSubmitting,
-                setTxHash,
-                setTxStatus,
-                setVaultId,
-                storageKey,
-                submitError,
-                usdtAllowance,
-                userAddress,
-                vaultId,
-                walletClient,
-              });
-            }}
-            submitError={submitError}
-            txHash={txHash}
-            txStatus={txStatus}
-          />
+          {step === "borrow" ? (
+            <BorrowStepView
+              borrowInput={borrowInput}
+              borrowStepError={borrowStepError}
+              canProceed={canProceed}
+              onBorrowChange={(value) => setBorrowInput(value)}
+              onNext={() => {
+                setTxStatus(null);
+                setTxHash(null);
+                setStep("collateral");
+              }}
+              onSelectMaturity={(id) => setSelectedMaturityId(id)}
+              onSelectToken={(id) => {
+                setToken(id);
+                setTokenMenuOpen(false);
+              }}
+              onToggleTokenMenu={() => setTokenMenuOpen((value) => !value)}
+              selectedMaturityId={selectedMaturityId}
+              selectedToken={selectedToken}
+              token={token}
+              tokenMenuOpen={tokenMenuOpen}
+              tokenMenuRef={tokenMenuRef}
+            />
+          ) : (
+            <CollateralStepView
+              canSubmit={canSubmit}
+              collateralInput={collateralInput}
+              collateralMenuOpen={collateralMenuOpen}
+              collateralMenuRef={collateralMenuRef}
+              isSubmitting={isSubmitting}
+              onBack={() => setStep("borrow")}
+              onCloseCollateralMenu={() => setCollateralMenuOpen(false)}
+              onCollateralChange={(value) => setCollateralInput(value)}
+              onMaxCollateral={() => {
+                if (usdtBalance === null) {
+                  return;
+                }
+                setCollateralInput(formatUnits(usdtBalance, usdtDecimals));
+              }}
+              onSelectExistingVault={() => setUseExistingVault(true)}
+              onSelectNewVault={() => setUseExistingVault(false)}
+              onSubmit={() => {
+                void handleBorrowSubmit({
+                  isCelo,
+                  parsedBorrowKes,
+                  parsedCollateral,
+                  refetch,
+                  setIsSubmitting,
+                  setTxHash,
+                  setTxStatus,
+                  setVaultId,
+                  storageKey,
+                  submitError,
+                  usdtAllowance,
+                  userAddress,
+                  vaultId: effectiveVaultId,
+                  walletClient,
+                });
+              }}
+              onToggleCollateralMenu={() => setCollateralMenuOpen((value) => !value)}
+              submitError={submitError}
+              txHash={txHash}
+              txStatus={txStatus}
+              usdtBalance={usdtBalance}
+              usdtDecimals={usdtDecimals}
+              useExistingVault={useExistingVault}
+              vaultId={vaultId}
+            />
+          )}
         </div>
       </div>
     </div>
