@@ -133,7 +133,9 @@ export function usePoolReads(userAddress?: Address): UsePoolReadsResult {
   }, [refreshIndex, userAddress]);
 
   return {
-    baseDecimals: snapshot ? Number(snapshot.baseDecimals) : null,
+    // Use the underlying base token's ERC20 decimals for all UI formatting and parseUnits/formatUnits.
+    // Pool `baseDecimals()` may differ across deployments/implementations.
+    baseDecimals: snapshot ? snapshot.tokenDecimals[0] : null,
     baseSymbol: snapshot?.baseSymbol ?? null,
     baseToken: snapshot?.baseToken ?? null,
     error,
