@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import { BorrowCard } from "@/ui/BorrowCard";
+import { LendCard } from "@/ui/LendCard";
 import { NavBar } from "@/ui/NavBar";
 import { PoolsCard } from "@/ui/PoolsCard";
 import { PositionsCard } from "@/ui/PositionsCard";
-import { TradeCard } from "@/ui/TradeCard";
 
 const GLOBAL_TABS = ["Lend", "Borrow", "Pools", "Positions"] as const;
 
@@ -22,7 +22,7 @@ export function AppShell() {
         onTabChange={(value) => setActiveTab(value as TabValue)}
       />
       <main className="mx-auto flex w-full max-w-6xl flex-col items-center px-4 py-16">
-        {activeTab === "Lend" ? <TradeCard /> : null}
+        {activeTab === "Lend" ? <LendCard /> : null}
         {activeTab === "Borrow" ? <BorrowCard /> : null}
         {activeTab === "Pools" ? <PoolsCard /> : null}
         {activeTab === "Positions" ? <PositionsCard /> : null}
