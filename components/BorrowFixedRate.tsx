@@ -3,7 +3,17 @@
 import { Check, ChevronDown, Waves } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
+import type { Address, Hex, WalletClient } from "viem";
+import { formatUnits, parseUnits } from "viem";
 import { cn } from "@/lib/cn";
+import { useBorrowVaultId } from "@/lib/useBorrowVaultId";
+import { useBorrowWalletData } from "@/lib/useBorrowWalletData";
+import { usePrivyAddress } from "@/lib/usePrivyAddress";
+import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
+import { approveUsdtJoin, buildVault, pour, sellFyKes } from "@/src/borrow-actions";
+import { BORROW_CONFIG } from "@/src/borrow-config";
+import { quoteFyForKes } from "@/src/borrow-quote";
+import { CELO_YIELD_POOL } from "@/src/poolInfo";
 
 type BorrowFixedRateProps = {
   className?: string;
@@ -49,9 +59,42 @@ function accentClasses(accent: MaturityOption["accent"]) {
   }
 }
 
-function isPositiveAmount(value: string) {
+function safeParseAmount(value: string, decimals: number) {
   const numeric = Number.parseFloat(value);
-  return Number.isFinite(numeric) && numeric > 0;
+  if (!value || Number.isNaN(numeric) || numeric <= 0) {
+    return null;
+  }
+  try {
+    return parseUnits(value, decimals);
+  } catch {
+    return null;
+  }
+}
+
+function getBorrowValidationError(params: {
+  userAddress?: Address;
+  walletClient: WalletClient | null;
+  collateral: bigint | null;
+  borrow: bigint | null;
+  usdtBalance: bigint | null;
+  token: TokenOption["id"];
+}) {
+  if (!params.userAddress) {
+    return "Connect wallet to continue.";
+  }
+  if (!params.walletClient) {
+    return "Wallet client unavailable.";
+  }
+  if (params.token !== "KESm") {
+    return "Borrowing USDT is not supported yet.";
+  }
+  if (!(params.collateral && params.borrow)) {
+    return "Enter collateral and borrow amounts.";
+  }
+  if (params.usdtBalance !== null && params.collateral > params.usdtBalance) {
+    return "Insufficient USDT balance.";
+  }
+  return null;
 }
 
 function TokenIcon({ tokenId }: { tokenId: TokenOption["id"] }) {
@@ -64,21 +107,80 @@ function TokenIcon({ tokenId }: { tokenId: TokenOption["id"] }) {
   );
 }
 
-export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
-  const [amount, setAmount] = useState("");
-  const [token, setToken] = useState<TokenOption["id"]>("USDT");
-  const [selectedMaturityId, setSelectedMaturityId] = useState<string>(MATURITIES[2]?.id ?? "");
-  const [tokenMenuOpen, setTokenMenuOpen] = useState(false);
-  const tokenMenuRef = useRef<HTMLDivElement | null>(null);
+async function runBorrowFlow(params: {
+  account: Address;
+  walletClient: WalletClient;
+  collateral: bigint;
+  borrowKesDesired: bigint;
+  allowance: bigint | null;
+  vaultId: Hex | null;
+  storageKey: string | null;
+  onStatus: (status: string) => void;
+  onTxHash: (hash: Hex) => void;
+  persistVaultId: (vaultId: Hex) => void;
+}) {
+  const needsApproval = params.allowance === null || params.allowance < params.collateral;
+  if (needsApproval) {
+    params.onStatus("Step 1/4: Approving USDT…");
+    const approval = await approveUsdtJoin({
+      account: params.account,
+      amount: params.collateral,
+      walletClient: params.walletClient,
+    });
+    params.onTxHash(approval.txHash);
+  }
 
-  const selectedMaturity =
-    MATURITIES.find((option) => option.id === selectedMaturityId) ?? MATURITIES[0];
+  let nextVaultId: Hex | null = params.vaultId;
+  if (!nextVaultId) {
+    params.onStatus("Step 2/4: Building vault…");
+    const built = await buildVault({ account: params.account, walletClient: params.walletClient });
+    nextVaultId = built.vaultId;
+    params.onTxHash(built.txHash);
+    params.persistVaultId(nextVaultId);
+    if (typeof window !== "undefined" && params.storageKey) {
+      window.localStorage.setItem(params.storageKey, nextVaultId);
+    }
+  }
+  if (!nextVaultId) {
+    throw new Error("Vault unavailable.");
+  }
 
-  const canContinue = isPositiveAmount(amount) && Boolean(selectedMaturity?.id) && Boolean(token);
-  const selectedToken = TOKENS.find((t) => t.id === token) ?? TOKENS[0];
+  const quote = await quoteFyForKes(params.borrowKesDesired);
+  if (quote.fyToBorrow <= 0n) {
+    throw new Error("Quote unavailable.");
+  }
 
+  params.onStatus("Step 3/4: Supplying collateral and borrowing…");
+  const result = await pour({
+    account: params.account,
+    art: quote.fyToBorrow,
+    ink: params.collateral,
+    to: CELO_YIELD_POOL.poolAddress as Address,
+    vaultId: nextVaultId,
+    walletClient: params.walletClient,
+  });
+  params.onTxHash(result.txHash);
+
+  const slippageBps = 50n;
+  const minKesOut = (params.borrowKesDesired * (10_000n - slippageBps)) / 10_000n;
+  params.onStatus("Step 4/4: Swapping fyKESm into KESm…");
+  const swapResult = await sellFyKes({
+    account: params.account,
+    minKesOut,
+    walletClient: params.walletClient,
+  });
+  params.onTxHash(swapResult.txHash);
+
+  return { vaultId: nextVaultId };
+}
+
+function useDismissOnEscapeAndOutsideClick(
+  open: boolean,
+  containerRef: React.RefObject<HTMLElement | null>,
+  onDismiss: () => void
+) {
   useEffect(() => {
-    if (!tokenMenuOpen) {
+    if (!open) {
       return;
     }
 
@@ -87,7 +189,7 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
         return;
       }
       event.preventDefault();
-      setTokenMenuOpen(false);
+      onDismiss();
     }
 
     function onPointerDown(event: PointerEvent) {
@@ -95,10 +197,10 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
       if (!target) {
         return;
       }
-      if (tokenMenuRef.current?.contains(target)) {
+      if (containerRef.current?.contains(target)) {
         return;
       }
-      setTokenMenuOpen(false);
+      onDismiss();
     }
 
     document.addEventListener("keydown", onKeyDown);
@@ -107,7 +209,361 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("pointerdown", onPointerDown);
     };
-  }, [tokenMenuOpen]);
+  }, [containerRef, onDismiss, open]);
+}
+
+function TokenDropdown({
+  open,
+  selected,
+  onToggle,
+}: {
+  open: boolean;
+  selected: TokenOption | undefined;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      aria-expanded={open}
+      aria-haspopup="menu"
+      className={cn(
+        "flex h-12 w-56 items-center justify-between gap-3 rounded-full border border-numo-ink bg-white px-3 text-numo-ink shadow-sm",
+        "transition hover:bg-numo-pill/50"
+      )}
+      onClick={onToggle}
+      type="button"
+    >
+      <span className="flex items-center gap-3">
+        {selected ? <TokenIcon tokenId={selected.id} /> : null}
+        <span className="font-semibold text-sm">{selected?.label}</span>
+      </span>
+      <ChevronDown
+        className={cn(
+          "h-4 w-4 text-numo-muted transition-transform",
+          open ? "rotate-180" : "rotate-0"
+        )}
+      />
+    </button>
+  );
+}
+
+function MaturityGrid({
+  tokenLabel,
+  selectedMaturityId,
+  onSelectMaturity,
+}: {
+  tokenLabel: string;
+  selectedMaturityId: string;
+  onSelectMaturity: (id: string) => void;
+}) {
+  return (
+    <div className="mt-10">
+      <div className="text-numo-muted text-xs">Available {tokenLabel}-based maturity dates</div>
+
+      <div className="mt-4 grid grid-cols-2 gap-4">
+        {MATURITIES.slice(0, 2).map((option) => {
+          const isSelected = option.id === selectedMaturityId;
+          const accent = accentClasses(option.accent);
+          return (
+            <button
+              className={cn(
+                "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
+                isSelected ? "ring-2 ring-numo-ink/10" : "hover:bg-numo-pill/60"
+              )}
+              key={option.id}
+              onClick={() => onSelectMaturity(option.id)}
+              type="button"
+            >
+              <span
+                className={cn("flex h-10 w-10 items-center justify-center rounded-full", accent)}
+              >
+                <Waves className="h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <div className="font-semibold text-numo-ink text-sm">
+                  {option.apr.toFixed(2)}% <span className="font-medium text-numo-muted">APR</span>
+                </div>
+                <div className="mt-1 text-numo-muted text-xs">{option.dateLabel}</div>
+              </div>
+            </button>
+          );
+        })}
+
+        {(() => {
+          const option = MATURITIES[2];
+          if (!option) {
+            return null;
+          }
+          const isSelected = option.id === selectedMaturityId;
+          return (
+            <button
+              className={cn(
+                "col-span-2 flex items-center gap-4 rounded-2xl border border-numo-border px-5 py-4 text-left shadow-sm transition",
+                isSelected
+                  ? "bg-gradient-to-r from-lime-200 via-emerald-200 to-emerald-500/70"
+                  : "bg-white hover:bg-numo-pill/60"
+              )}
+              onClick={() => onSelectMaturity(option.id)}
+              type="button"
+            >
+              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-sm">
+                <Waves className="h-6 w-6 text-emerald-700" />
+              </span>
+              <div className="min-w-0">
+                <div className="font-semibold text-base text-numo-ink">
+                  {option.apr.toFixed(2)}% <span className="font-medium text-numo-ink/70">APR</span>
+                </div>
+                <div className="mt-1 text-numo-ink/70 text-sm">{option.dateLabel}</div>
+              </div>
+            </button>
+          );
+        })()}
+      </div>
+    </div>
+  );
+}
+
+function CollateralCard({
+  collateralInput,
+  onCollateralChange,
+  usdtBalance,
+  usdtDecimals,
+  onMax,
+}: {
+  collateralInput: string;
+  onCollateralChange: (value: string) => void;
+  usdtBalance: bigint | null;
+  usdtDecimals: number;
+  onMax: () => void;
+}) {
+  return (
+    <div className="mt-4 rounded-2xl border border-numo-border bg-white px-4 py-3 shadow-sm">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="text-numo-muted text-xs">Collateral (USDT)</div>
+          <input
+            className="mt-2 w-full bg-transparent text-lg text-numo-ink outline-none placeholder:text-numo-border"
+            inputMode="decimal"
+            onChange={(event) => onCollateralChange(event.target.value)}
+            placeholder="0"
+            value={collateralInput}
+          />
+          <div className="mt-1 text-numo-muted text-xs">
+            Balance: {usdtBalance === null ? "—" : `${formatUnits(usdtBalance, usdtDecimals)} USDT`}
+          </div>
+        </div>
+        <button
+          className="rounded-full bg-numo-pill px-3 py-2 font-semibold text-numo-ink text-xs transition hover:opacity-90 disabled:opacity-50"
+          disabled={usdtBalance === null}
+          onClick={onMax}
+          type="button"
+        >
+          MAX
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SubmitSection({
+  canContinue,
+  isSubmitting,
+  onSubmit,
+  submitError,
+  txHash,
+  txStatus,
+}: {
+  canContinue: boolean;
+  isSubmitting: boolean;
+  onSubmit: () => void;
+  submitError: string | null;
+  txHash: Hex | null;
+  txStatus: string | null;
+}) {
+  return (
+    <>
+      <button
+        className={cn(
+          "mt-10 h-12 w-full rounded-2xl border border-numo-border bg-white font-semibold text-numo-muted text-sm",
+          "shadow-sm transition",
+          canContinue ? "text-numo-ink hover:bg-numo-pill/60" : "opacity-60"
+        )}
+        disabled={!canContinue || isSubmitting}
+        onClick={onSubmit}
+        type="button"
+      >
+        {isSubmitting ? "Submitting…" : "Next Step"}
+      </button>
+
+      {submitError ? <div className="mt-3 text-numo-muted text-xs">{submitError}</div> : null}
+
+      {txStatus || txHash ? (
+        <div className="mt-4 rounded-2xl border border-numo-border bg-white/80 px-4 py-3 text-numo-ink text-sm shadow-sm backdrop-blur">
+          <div className="font-semibold">{txStatus ?? "Transaction submitted."}</div>
+          {txHash ? <div className="mt-2 break-all text-numo-muted text-xs">{txHash}</div> : null}
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function getPreflightError(params: {
+  isCelo: boolean;
+  submitError: string | null;
+  parsedCollateral: bigint | null;
+  parsedBorrowKes: bigint | null;
+}) {
+  if (!params.isCelo) {
+    return "Switch wallet network to Celo (42220).";
+  }
+  if (params.submitError) {
+    return params.submitError;
+  }
+  if (!(params.parsedCollateral && params.parsedBorrowKes)) {
+    return "Enter collateral and borrow amounts.";
+  }
+  return null;
+}
+
+async function submitBorrowTx(params: {
+  account: Address;
+  walletClient: WalletClient;
+  parsedCollateral: bigint;
+  parsedBorrowKes: bigint;
+  usdtAllowance: bigint | null;
+  vaultId: Hex | null;
+  storageKey: string | null;
+  onStatus: (status: string) => void;
+  onTxHash: (hash: Hex) => void;
+  persistVaultId: (vaultId: Hex) => void;
+}) {
+  try {
+    const flow = await runBorrowFlow({
+      account: params.account,
+      allowance: params.usdtAllowance,
+      borrowKesDesired: params.parsedBorrowKes,
+      collateral: params.parsedCollateral,
+      onStatus: params.onStatus,
+      onTxHash: params.onTxHash,
+      persistVaultId: params.persistVaultId,
+      storageKey: params.storageKey,
+      vaultId: params.vaultId,
+      walletClient: params.walletClient,
+    });
+    return { ok: true as const, vaultId: flow.vaultId };
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : "Borrow failed.";
+    return { message, ok: false as const };
+  }
+}
+
+async function handleBorrowSubmit(params: {
+  userAddress?: Address;
+  walletClient: WalletClient | null;
+  isCelo: boolean;
+  submitError: string | null;
+  parsedCollateral: bigint | null;
+  parsedBorrowKes: bigint | null;
+  usdtAllowance: bigint | null;
+  vaultId: Hex | null;
+  storageKey: string | null;
+  setIsSubmitting: (value: boolean) => void;
+  setTxStatus: (value: string | null) => void;
+  setTxHash: (value: Hex | null) => void;
+  setVaultId: (value: Hex | null) => void;
+  refetch: (address: Address) => Promise<void>;
+}) {
+  if (!(params.userAddress && params.walletClient)) {
+    return;
+  }
+
+  const preflightError = getPreflightError({
+    isCelo: params.isCelo,
+    parsedBorrowKes: params.parsedBorrowKes,
+    parsedCollateral: params.parsedCollateral,
+    submitError: params.submitError,
+  });
+  if (preflightError) {
+    params.setTxStatus(preflightError);
+    return;
+  }
+
+  const collateral = params.parsedCollateral as bigint;
+  const borrowKesDesired = params.parsedBorrowKes as bigint;
+
+  params.setIsSubmitting(true);
+  params.setTxStatus(null);
+  params.setTxHash(null);
+
+  const result = await submitBorrowTx({
+    account: params.userAddress,
+    onStatus: (status) => params.setTxStatus(status),
+    onTxHash: (hash) => params.setTxHash(hash),
+    parsedBorrowKes: borrowKesDesired,
+    parsedCollateral: collateral,
+    persistVaultId: (next) => params.setVaultId(next),
+    storageKey: params.storageKey,
+    usdtAllowance: params.usdtAllowance,
+    vaultId: params.vaultId,
+    walletClient: params.walletClient,
+  });
+
+  if (!result.ok) {
+    params.setTxStatus(result.message);
+    params.setIsSubmitting(false);
+    return;
+  }
+
+  params.setTxStatus("Position updated.");
+  params.setVaultId(result.vaultId);
+  await params.refetch(params.userAddress);
+  params.setIsSubmitting(false);
+}
+
+export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
+  const userAddress = usePrivyAddress();
+  const { isCelo, walletClient } = usePrivyWalletClient();
+
+  const [collateralInput, setCollateralInput] = useState("");
+  const [borrowInput, setBorrowInput] = useState("");
+  const [token, setToken] = useState<TokenOption["id"]>("KESm");
+  const [selectedMaturityId, setSelectedMaturityId] = useState<string>(MATURITIES[2]?.id ?? "");
+  const [tokenMenuOpen, setTokenMenuOpen] = useState(false);
+  const tokenMenuRef = useRef<HTMLDivElement | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [txStatus, setTxStatus] = useState<string | null>(null);
+  const [txHash, setTxHash] = useState<Hex | null>(null);
+
+  const { storageKey, vaultId, setVaultId } = useBorrowVaultId({
+    ilkId: BORROW_CONFIG.ilk.usdt,
+    seriesId: BORROW_CONFIG.seriesId.fyKesm,
+    userAddress,
+  });
+
+  const { kesDecimals, refetch, usdtAllowance, usdtBalance, usdtDecimals } = useBorrowWalletData({
+    fyToken: BORROW_CONFIG.tokens.fyKesm as Address,
+    kesToken: BORROW_CONFIG.tokens.kesm as Address,
+    usdtJoin: BORROW_CONFIG.joins.usdt as Address,
+    usdtToken: BORROW_CONFIG.tokens.usdt as Address,
+    userAddress,
+  });
+
+  const parsedCollateral = safeParseAmount(collateralInput, usdtDecimals);
+  const parsedBorrowKes = safeParseAmount(borrowInput, kesDecimals);
+
+  const validationError = getBorrowValidationError({
+    borrow: parsedBorrowKes,
+    collateral: parsedCollateral,
+    token,
+    usdtBalance,
+    userAddress,
+    walletClient,
+  });
+  const networkError = isCelo ? null : "Switch wallet network to Celo (42220).";
+  const submitError = networkError ?? validationError;
+  const canContinue = !submitError && Boolean(selectedMaturityId);
+  const selectedToken = TOKENS.find((t) => t.id === token) ?? TOKENS[0];
+
+  useDismissOnEscapeAndOutsideClick(tokenMenuOpen, tokenMenuRef, () => setTokenMenuOpen(false));
 
   return (
     <div className={cn("w-full", className)}>
@@ -140,34 +596,18 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
                 )}
                 id="borrow-amount"
                 inputMode="decimal"
-                onChange={(event) => setAmount(event.target.value)}
-                placeholder="Enter amount"
-                value={amount}
+                onChange={(event) => setBorrowInput(event.target.value)}
+                placeholder={token === "KESm" ? "Enter amount" : "Coming soon"}
+                value={borrowInput}
               />
             </div>
 
             <div className="relative" ref={tokenMenuRef}>
-              <button
-                aria-expanded={tokenMenuOpen}
-                aria-haspopup="menu"
-                className={cn(
-                  "flex h-12 w-56 items-center justify-between gap-3 rounded-full border border-numo-ink bg-white px-3 text-numo-ink shadow-sm",
-                  "transition hover:bg-numo-pill/50"
-                )}
-                onClick={() => setTokenMenuOpen((value) => !value)}
-                type="button"
-              >
-                <span className="flex items-center gap-3">
-                  {selectedToken ? <TokenIcon tokenId={selectedToken.id} /> : null}
-                  <span className="font-semibold text-sm">{selectedToken?.label}</span>
-                </span>
-                <ChevronDown
-                  className={cn(
-                    "h-4 w-4 text-numo-muted transition-transform",
-                    tokenMenuOpen ? "rotate-180" : "rotate-0"
-                  )}
-                />
-              </button>
+              <TokenDropdown
+                onToggle={() => setTokenMenuOpen((value) => !value)}
+                open={tokenMenuOpen}
+                selected={selectedToken}
+              />
 
               {tokenMenuOpen ? (
                 <div
@@ -212,86 +652,50 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
             </div>
           </div>
 
-          <div className="mt-10">
-            <div className="text-numo-muted text-xs">Available {token}-based maturity dates</div>
+          <CollateralCard
+            collateralInput={collateralInput}
+            onCollateralChange={(value) => setCollateralInput(value)}
+            onMax={() => {
+              if (usdtBalance === null) {
+                return;
+              }
+              setCollateralInput(formatUnits(usdtBalance, usdtDecimals));
+            }}
+            usdtBalance={usdtBalance}
+            usdtDecimals={usdtDecimals}
+          />
 
-            <div className="mt-4 grid grid-cols-2 gap-4">
-              {MATURITIES.slice(0, 2).map((option) => {
-                const isSelected = option.id === selectedMaturityId;
-                const accent = accentClasses(option.accent);
-                return (
-                  <button
-                    className={cn(
-                      "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
-                      isSelected ? "ring-2 ring-numo-ink/10" : "hover:bg-numo-pill/60"
-                    )}
-                    key={option.id}
-                    onClick={() => setSelectedMaturityId(option.id)}
-                    type="button"
-                  >
-                    <span
-                      className={cn(
-                        "flex h-10 w-10 items-center justify-center rounded-full",
-                        accent
-                      )}
-                    >
-                      <Waves className="h-5 w-5" />
-                    </span>
-                    <div className="min-w-0">
-                      <div className="font-semibold text-numo-ink text-sm">
-                        {option.apr.toFixed(2)}%{" "}
-                        <span className="font-medium text-numo-muted">APR</span>
-                      </div>
-                      <div className="mt-1 text-numo-muted text-xs">{option.dateLabel}</div>
-                    </div>
-                  </button>
-                );
-              })}
+          <MaturityGrid
+            onSelectMaturity={(id) => setSelectedMaturityId(id)}
+            selectedMaturityId={selectedMaturityId}
+            tokenLabel={token}
+          />
 
-              {(() => {
-                const option = MATURITIES[2];
-                if (!option) {
-                  return null;
-                }
-                const isSelected = option.id === selectedMaturityId;
-                return (
-                  <button
-                    className={cn(
-                      "col-span-2 flex items-center gap-4 rounded-2xl border border-numo-border px-5 py-4 text-left shadow-sm transition",
-                      isSelected
-                        ? "bg-gradient-to-r from-lime-200 via-emerald-200 to-emerald-500/70"
-                        : "bg-white hover:bg-numo-pill/60"
-                    )}
-                    onClick={() => setSelectedMaturityId(option.id)}
-                    type="button"
-                  >
-                    <span className="flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-sm">
-                      <Waves className="h-6 w-6 text-emerald-700" />
-                    </span>
-                    <div className="min-w-0">
-                      <div className="font-semibold text-base text-numo-ink">
-                        {option.apr.toFixed(2)}%{" "}
-                        <span className="font-medium text-numo-ink/70">APR</span>
-                      </div>
-                      <div className="mt-1 text-numo-ink/70 text-sm">{option.dateLabel}</div>
-                    </div>
-                  </button>
-                );
-              })()}
-            </div>
-          </div>
-
-          <button
-            className={cn(
-              "mt-10 h-12 w-full rounded-2xl border border-numo-border bg-white font-semibold text-numo-muted text-sm",
-              "shadow-sm transition",
-              canContinue ? "text-numo-ink hover:bg-numo-pill/60" : "opacity-60"
-            )}
-            disabled={!canContinue}
-            type="button"
-          >
-            Next Step
-          </button>
+          <SubmitSection
+            canContinue={canContinue}
+            isSubmitting={isSubmitting}
+            onSubmit={() => {
+              void handleBorrowSubmit({
+                isCelo,
+                parsedBorrowKes,
+                parsedCollateral,
+                refetch,
+                setIsSubmitting,
+                setTxHash,
+                setTxStatus,
+                setVaultId,
+                storageKey,
+                submitError,
+                usdtAllowance,
+                userAddress,
+                vaultId,
+                walletClient,
+              });
+            }}
+            submitError={submitError}
+            txHash={txHash}
+            txStatus={txStatus}
+          />
         </div>
       </div>
     </div>
