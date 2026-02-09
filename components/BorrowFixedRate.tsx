@@ -5,11 +5,14 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import type { Address, Hex, WalletClient } from "viem";
 import { formatUnits, parseUnits } from "viem";
+import { poolAbi } from "@/lib/abi/pool";
+import { publicClient } from "@/lib/celoClients";
 import { cn } from "@/lib/cn";
 import { useBorrowVaultId } from "@/lib/useBorrowVaultId";
 import { useBorrowWalletData } from "@/lib/useBorrowWalletData";
 import { usePrivyAddress } from "@/lib/usePrivyAddress";
 import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
+import { aprFromPriceWad, formatAprPercent, WAD } from "@/src/apr";
 import { approveUsdtJoin, buildVault, pour, sellFyKes } from "@/src/borrow-actions";
 import { BORROW_CONFIG } from "@/src/borrow-config";
 import { quoteFyForKes } from "@/src/borrow-quote";
@@ -40,7 +43,7 @@ const TOKEN_ICON_SRC = {
 
 type MaturityOption = {
   id: string;
-  apr: number;
+  aprText: string;
   dateLabel: string;
   accent: "teal" | "violet" | "lime";
 };
@@ -54,11 +57,82 @@ const COLLATERAL_OPTIONS: CollateralOption[] = [
   { id: "USDT", label: "USDT", subtitle: "Tether USD" },
 ];
 
-const MATURITIES: MaturityOption[] = [
-  { accent: "teal", apr: 31.32, dateLabel: "31 Dec 2021", id: "2021-12-31" },
-  { accent: "violet", apr: 29.96, dateLabel: "31 Mar 2022", id: "2022-03-31" },
-  { accent: "lime", apr: 59.12, dateLabel: "23 Jun 2022", id: "2022-06-23" },
-];
+function formatMaturityDateLabel(maturitySeconds: number) {
+  // Match the screenshot style (e.g. "31 Dec 2021"), but always in UTC.
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    month: "short",
+    timeZone: "UTC",
+    year: "numeric",
+  }).format(new Date(maturitySeconds * 1000));
+}
+
+async function fetchBorrowMaturityOption(): Promise<MaturityOption> {
+  const [maturity, poolBaseBalance, poolFyBalance] = await Promise.all([
+    publicClient.readContract({
+      abi: poolAbi,
+      address: CELO_YIELD_POOL.poolAddress as Address,
+      functionName: "maturity",
+    }),
+    publicClient.readContract({
+      abi: poolAbi,
+      address: CELO_YIELD_POOL.poolAddress as Address,
+      functionName: "getBaseBalance",
+    }),
+    publicClient.readContract({
+      abi: poolAbi,
+      address: CELO_YIELD_POOL.poolAddress as Address,
+      functionName: "getFYTokenBalance",
+    }),
+  ]);
+
+  const maturitySeconds = Number(maturity);
+  const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+  const timeRemaining = BigInt(maturitySeconds) - nowSeconds;
+
+  const aprText =
+    timeRemaining > 0n && poolFyBalance > 0n
+      ? formatAprPercent(aprFromPriceWad((poolBaseBalance * WAD) / poolFyBalance, timeRemaining))
+      : "—";
+
+  return {
+    accent: "lime",
+    aprText,
+    dateLabel: Number.isFinite(maturitySeconds) ? formatMaturityDateLabel(maturitySeconds) : "—",
+    id: `pool:${maturitySeconds}`,
+  };
+}
+
+function useBorrowMaturityOptions(): MaturityOption[] {
+  const [options, setOptions] = useState<MaturityOption[]>([
+    { accent: "lime", aprText: "—", dateLabel: "—", id: "loading" },
+  ]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const next: MaturityOption[] = [await fetchBorrowMaturityOption()];
+
+        if (cancelled) {
+          return;
+        }
+        setOptions(next);
+      } catch {
+        if (cancelled) {
+          return;
+        }
+        setOptions([{ accent: "lime", aprText: "—", dateLabel: "—", id: "error" }]);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return options;
+}
 
 function accentClasses(accent: MaturityOption["accent"]) {
   switch (accent) {
@@ -277,73 +351,99 @@ function MaturityGrid({
   tokenLabel,
   selectedMaturityId,
   onSelectMaturity,
+  options,
 }: {
   tokenLabel: string;
   selectedMaturityId: string;
   onSelectMaturity: (id: string) => void;
+  options: MaturityOption[];
 }) {
+  const left = options[0];
+  const right = options[1];
+  const wide = options[2];
   return (
     <div className="mt-10">
       <div className="text-numo-muted text-xs">Available {tokenLabel}-based maturity dates</div>
 
       <div className="mt-4 grid grid-cols-2 gap-4">
-        {MATURITIES.slice(0, 2).map((option) => {
-          const isSelected = option.id === selectedMaturityId;
-          const accent = accentClasses(option.accent);
-          return (
-            <button
+        {left ? (
+          <button
+            className={cn(
+              "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
+              left.id === selectedMaturityId ? "ring-2 ring-numo-ink/10" : "hover:bg-numo-pill/60"
+            )}
+            onClick={() => onSelectMaturity(left.id)}
+            type="button"
+          >
+            <span
               className={cn(
-                "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
-                isSelected ? "ring-2 ring-numo-ink/10" : "hover:bg-numo-pill/60"
+                "flex h-10 w-10 items-center justify-center rounded-full",
+                accentClasses(left.accent)
               )}
-              key={option.id}
-              onClick={() => onSelectMaturity(option.id)}
-              type="button"
             >
-              <span
-                className={cn("flex h-10 w-10 items-center justify-center rounded-full", accent)}
-              >
-                <Waves className="h-5 w-5" />
-              </span>
-              <div className="min-w-0">
-                <div className="font-semibold text-numo-ink text-sm">
-                  {option.apr.toFixed(2)}% <span className="font-medium text-numo-muted">APR</span>
-                </div>
-                <div className="mt-1 text-numo-muted text-xs">{option.dateLabel}</div>
+              <Waves className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <div className="font-semibold text-numo-ink text-sm">
+                {left.aprText} <span className="font-medium text-numo-muted">APR</span>
               </div>
-            </button>
-          );
-        })}
+              <div className="mt-1 text-numo-muted text-xs">{left.dateLabel}</div>
+            </div>
+          </button>
+        ) : (
+          <div />
+        )}
 
-        {(() => {
-          const option = MATURITIES[2];
-          if (!option) {
-            return null;
-          }
-          const isSelected = option.id === selectedMaturityId;
-          return (
-            <button
+        {right ? (
+          <button
+            className={cn(
+              "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
+              right.id === selectedMaturityId ? "ring-2 ring-numo-ink/10" : "hover:bg-numo-pill/60"
+            )}
+            onClick={() => onSelectMaturity(right.id)}
+            type="button"
+          >
+            <span
               className={cn(
-                "col-span-2 flex items-center gap-4 rounded-2xl border border-numo-border px-5 py-4 text-left shadow-sm transition",
-                isSelected
-                  ? "bg-gradient-to-r from-lime-200 via-emerald-200 to-emerald-500/70"
-                  : "bg-white hover:bg-numo-pill/60"
+                "flex h-10 w-10 items-center justify-center rounded-full",
+                accentClasses(right.accent)
               )}
-              onClick={() => onSelectMaturity(option.id)}
-              type="button"
             >
-              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-sm">
-                <Waves className="h-6 w-6 text-emerald-700" />
-              </span>
-              <div className="min-w-0">
-                <div className="font-semibold text-base text-numo-ink">
-                  {option.apr.toFixed(2)}% <span className="font-medium text-numo-ink/70">APR</span>
-                </div>
-                <div className="mt-1 text-numo-ink/70 text-sm">{option.dateLabel}</div>
+              <Waves className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <div className="font-semibold text-numo-ink text-sm">
+                {right.aprText} <span className="font-medium text-numo-muted">APR</span>
               </div>
-            </button>
-          );
-        })()}
+              <div className="mt-1 text-numo-muted text-xs">{right.dateLabel}</div>
+            </div>
+          </button>
+        ) : (
+          <div />
+        )}
+
+        {wide ? (
+          <button
+            className={cn(
+              "col-span-2 flex items-center gap-4 rounded-2xl border border-numo-border px-5 py-4 text-left shadow-sm transition",
+              wide.id === selectedMaturityId
+                ? "bg-gradient-to-r from-lime-200 via-emerald-200 to-emerald-500/70"
+                : "bg-white hover:bg-numo-pill/60"
+            )}
+            onClick={() => onSelectMaturity(wide.id)}
+            type="button"
+          >
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-sm">
+              <Waves className="h-6 w-6 text-emerald-700" />
+            </span>
+            <div className="min-w-0">
+              <div className="font-semibold text-base text-numo-ink">
+                {wide.aprText} <span className="font-medium text-numo-ink/70">APR</span>
+              </div>
+              <div className="mt-1 text-numo-ink/70 text-sm">{wide.dateLabel}</div>
+            </div>
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -715,6 +815,7 @@ function BorrowStepView(params: {
   onSelectToken: (id: TokenOption["id"]) => void;
   selectedMaturityId: string;
   onSelectMaturity: (id: string) => void;
+  maturityOptions: MaturityOption[];
   canProceed: boolean;
   borrowStepError: string | null;
   onNext: () => void;
@@ -741,6 +842,7 @@ function BorrowStepView(params: {
 
       <MaturityGrid
         onSelectMaturity={params.onSelectMaturity}
+        options={params.maturityOptions}
         selectedMaturityId={params.selectedMaturityId}
         tokenLabel={params.token}
       />
@@ -867,7 +969,9 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
   const [collateralInput, setCollateralInput] = useState("");
   const [borrowInput, setBorrowInput] = useState("");
   const [token, setToken] = useState<TokenOption["id"]>("KESm");
-  const [selectedMaturityId, setSelectedMaturityId] = useState<string>(MATURITIES[2]?.id ?? "");
+  const maturityOptions = useBorrowMaturityOptions();
+  const defaultMaturityId = maturityOptions[0]?.id ?? "";
+  const [selectedMaturityId, setSelectedMaturityId] = useState<string>(defaultMaturityId);
   const [tokenMenuOpen, setTokenMenuOpen] = useState(false);
   const tokenMenuRef = useRef<HTMLDivElement | null>(null);
   const [collateralMenuOpen, setCollateralMenuOpen] = useState(false);
@@ -892,6 +996,16 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
 
   const parsedCollateral = safeParseAmount(collateralInput, usdtDecimals);
   const parsedBorrowKes = safeParseAmount(borrowInput, kesDecimals);
+
+  useEffect(() => {
+    // Once we know the real maturity id, select it unless the user already picked something else.
+    if (
+      (!selectedMaturityId || selectedMaturityId === "loading" || selectedMaturityId === "error") &&
+      defaultMaturityId
+    ) {
+      setSelectedMaturityId(defaultMaturityId);
+    }
+  }, [defaultMaturityId, selectedMaturityId]);
 
   const selectedToken = TOKENS.find((t) => t.id === token) ?? TOKENS[0];
 
@@ -944,6 +1058,7 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
               borrowInput={borrowInput}
               borrowStepError={borrowStepError}
               canProceed={canProceed}
+              maturityOptions={maturityOptions}
               onBorrowChange={(value) => setBorrowInput(value)}
               onNext={() => {
                 setTxStatus(null);
