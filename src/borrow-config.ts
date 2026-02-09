@@ -24,6 +24,7 @@ export const BORROW_CONFIG = {
   tokens: {
     fyKesm: "0x2EcECD30c115B6F1eA612205A04cf3cF77049503",
     kesm: "0x456a3D042C0DbD3db53D5489e98dFb038553B0d0",
-    usdt: "0x617f3112bf5397D0467D315cC709EF968D9ba546",
+    // Native USDT on Celo (USD₮)
+    usdt: "0x48065fbBE25f71C9282ddf5e1cD6D6A887483D5e",
   },
 } as const;
