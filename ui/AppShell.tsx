@@ -5,9 +5,8 @@ import { BorrowCard } from "@/ui/BorrowCard";
 import { LendCard } from "@/ui/LendCard";
 import { NavBar } from "@/ui/NavBar";
 import { PoolsCard } from "@/ui/PoolsCard";
-import { PositionsCard } from "@/ui/PositionsCard";
 
-const GLOBAL_TABS = ["Lend", "Borrow", "Pools", "Positions"] as const;
+const GLOBAL_TABS = ["Lend", "Borrow", "Pools"] as const;
 
 type TabValue = (typeof GLOBAL_TABS)[number];
 
@@ -25,7 +24,6 @@ export function AppShell() {
         {activeTab === "Lend" ? <LendCard /> : null}
         {activeTab === "Borrow" ? <BorrowCard /> : null}
         {activeTab === "Pools" ? <PoolsCard /> : null}
-        {activeTab === "Positions" ? <PositionsCard /> : null}
       </main>
     </div>
   );
