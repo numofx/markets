@@ -136,7 +136,9 @@ async function fetchLendAprText(params: {
 
   // Prefer quoting the pool for a small trade size (1 base token) to get a curve-aware spot price.
   try {
-    const baseIn = 10n ** BigInt(params.baseDecimals);
+    const baseUnit = 10n ** BigInt(params.baseDecimals);
+    // Use a tiny amount for a closer-to-spot quote (0.001 base token), matching typical UX expectations.
+    const baseIn = baseUnit / 1000n || 1n;
     if (baseIn <= U128_MAX) {
       const fyOut = await publicClient.readContract({
         abi: poolAbi,

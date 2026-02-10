@@ -5,6 +5,7 @@ import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import type { Address, Hex, WalletClient } from "viem";
 import { formatUnits, parseUnits } from "viem";
+import { erc20Abi } from "@/lib/abi/erc20";
 import { poolAbi } from "@/lib/abi/pool";
 import { publicClient } from "@/lib/celoClients";
 import { cn } from "@/lib/cn";
@@ -46,6 +47,8 @@ type MaturityOption = {
   aprText: string;
   dateLabel: string;
   accent: "teal" | "violet" | "lime";
+  disabled?: boolean;
+  disabledReason?: string;
 };
 
 const TOKENS: TokenOption[] = [
@@ -67,38 +70,137 @@ function formatMaturityDateLabel(maturitySeconds: number) {
   }).format(new Date(maturitySeconds * 1000));
 }
 
-async function fetchBorrowMaturityOption(): Promise<MaturityOption> {
-  const [maturity, poolBaseBalance, poolFyBalance] = await Promise.all([
-    publicClient.readContract({
-      abi: poolAbi,
-      address: CELO_YIELD_POOL.poolAddress as Address,
-      functionName: "maturity",
-    }),
-    publicClient.readContract({
-      abi: poolAbi,
-      address: CELO_YIELD_POOL.poolAddress as Address,
-      functionName: "getBaseBalance",
-    }),
-    publicClient.readContract({
-      abi: poolAbi,
-      address: CELO_YIELD_POOL.poolAddress as Address,
-      functionName: "getFYTokenBalance",
-    }),
-  ]);
+const U128_MAX = BigInt("340282366920938463463374607431768211455");
 
-  const maturitySeconds = Number(maturity);
+function toWad(value: bigint, decimals: number) {
+  if (decimals === 18) {
+    return value;
+  }
+  if (decimals < 18) {
+    return value * 10n ** BigInt(18 - decimals);
+  }
+  return value / 10n ** BigInt(decimals - 18);
+}
+
+function isNegativeInterestRatesNotAllowed(caught: unknown) {
+  const message = caught instanceof Error ? caught.message : String(caught ?? "");
+  return message.includes("0xb24d9e1b") || message.includes("NegativeInterestRatesNotAllowed");
+}
+
+type BorrowAprContext = {
+  baseDecimals: number;
+  fyDecimals: number;
+  maturitySeconds: number;
+  poolAddress: Address;
+  poolBaseBalance: bigint;
+  poolFyBalance: bigint;
+};
+
+async function readBorrowAprContext(poolAddress: Address): Promise<BorrowAprContext> {
+  const [baseToken, fyToken, maturity, poolBaseBalance, poolFyBalance] =
+    await publicClient.multicall({
+      allowFailure: false,
+      contracts: [
+        { abi: poolAbi, address: poolAddress, functionName: "baseToken" },
+        { abi: poolAbi, address: poolAddress, functionName: "fyToken" },
+        { abi: poolAbi, address: poolAddress, functionName: "maturity" },
+        { abi: poolAbi, address: poolAddress, functionName: "getBaseBalance" },
+        { abi: poolAbi, address: poolAddress, functionName: "getFYTokenBalance" },
+      ],
+    });
+
+  const [baseDecimals, fyDecimals] = await publicClient.multicall({
+    allowFailure: false,
+    contracts: [
+      { abi: erc20Abi, address: baseToken, functionName: "decimals" },
+      { abi: erc20Abi, address: fyToken, functionName: "decimals" },
+    ],
+  });
+
+  return {
+    baseDecimals: Number(baseDecimals),
+    fyDecimals: Number(fyDecimals),
+    maturitySeconds: Number(maturity),
+    poolAddress,
+    poolBaseBalance,
+    poolFyBalance,
+  };
+}
+
+async function quoteAprFromTinySellBasePreview(params: {
+  baseDecimals: number;
+  fyDecimals: number;
+  poolAddress: Address;
+  poolBaseBalance: bigint;
+  poolFyBalance: bigint;
+  timeRemaining: bigint;
+}) {
+  if (params.timeRemaining <= 0n || params.poolFyBalance <= 0n) {
+    return { aprText: "—", disabled: false, disabledReason: undefined };
+  }
+
+  try {
+    const baseUnit = 10n ** BigInt(params.baseDecimals);
+    const baseIn = baseUnit / 1000n || 1n;
+    if (baseIn <= U128_MAX) {
+      const fyOut = await publicClient.readContract({
+        abi: poolAbi,
+        address: params.poolAddress,
+        args: [baseIn],
+        functionName: "sellBasePreview",
+      });
+
+      if (fyOut > 0n) {
+        const pWad = (toWad(baseIn, params.baseDecimals) * WAD) / toWad(fyOut, params.fyDecimals);
+        return {
+          aprText: formatAprPercent(aprFromPriceWad(pWad, params.timeRemaining)),
+          disabled: false,
+          disabledReason: undefined,
+        };
+      }
+    }
+  } catch (caught) {
+    if (isNegativeInterestRatesNotAllowed(caught)) {
+      return {
+        aprText: "—",
+        disabled: true,
+        disabledReason: "Pool currently rejects borrow/lend trades for this maturity.",
+      };
+    }
+  }
+
+  const pWad =
+    (toWad(params.poolBaseBalance, params.baseDecimals) * WAD) /
+    toWad(params.poolFyBalance, params.fyDecimals);
+  return {
+    aprText: formatAprPercent(aprFromPriceWad(pWad, params.timeRemaining)),
+    disabled: false,
+    disabledReason: undefined,
+  };
+}
+
+async function fetchBorrowMaturityOption(): Promise<MaturityOption> {
+  const poolAddress = CELO_YIELD_POOL.poolAddress as Address;
+  const ctx = await readBorrowAprContext(poolAddress);
+  const maturitySeconds = ctx.maturitySeconds;
   const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
   const timeRemaining = BigInt(maturitySeconds) - nowSeconds;
 
-  const aprText =
-    timeRemaining > 0n && poolFyBalance > 0n
-      ? formatAprPercent(aprFromPriceWad((poolBaseBalance * WAD) / poolFyBalance, timeRemaining))
-      : "—";
+  const quote = await quoteAprFromTinySellBasePreview({
+    baseDecimals: ctx.baseDecimals,
+    fyDecimals: ctx.fyDecimals,
+    poolAddress: ctx.poolAddress,
+    poolBaseBalance: ctx.poolBaseBalance,
+    poolFyBalance: ctx.poolFyBalance,
+    timeRemaining,
+  });
 
   return {
     accent: "lime",
-    aprText,
+    aprText: quote.aprText,
     dateLabel: Number.isFinite(maturitySeconds) ? formatMaturityDateLabel(maturitySeconds) : "—",
+    disabled: quote.disabled,
+    disabledReason: quote.disabledReason,
     id: `pool:${maturitySeconds}`,
   };
 }
@@ -110,24 +212,30 @@ function useBorrowMaturityOptions(): MaturityOption[] {
 
   useEffect(() => {
     let cancelled = false;
-    void (async () => {
+    const run = async () => {
       try {
         const next: MaturityOption[] = [await fetchBorrowMaturityOption()];
-
-        if (cancelled) {
-          return;
+        if (!cancelled) {
+          setOptions(next);
         }
-        setOptions(next);
       } catch {
-        if (cancelled) {
-          return;
+        if (!cancelled) {
+          setOptions([{ accent: "lime", aprText: "—", dateLabel: "—", id: "error" }]);
         }
-        setOptions([{ accent: "lime", aprText: "—", dateLabel: "—", id: "error" }]);
       }
-    })();
+    };
+
+    void run();
+    const intervalId = setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") {
+        return;
+      }
+      void run();
+    }, 15_000);
 
     return () => {
       cancelled = true;
+      clearInterval(intervalId);
     };
   }, []);
 
@@ -361,89 +469,82 @@ function MaturityGrid({
   const left = options[0];
   const right = options[1];
   const wide = options[2];
+
+  const renderOption = (option: MaturityOption, wideLayout: boolean) => {
+    const isSelected = option.id === selectedMaturityId;
+    const isDisabled = Boolean(option.disabled) || option.id === "loading" || option.id === "error";
+    const dateLine = option.disabledReason
+      ? `${option.dateLabel} · ${option.disabledReason}`
+      : option.dateLabel;
+
+    if (wideLayout) {
+      const backgroundClass = isSelected
+        ? "bg-gradient-to-r from-lime-200 via-emerald-200 to-emerald-500/70"
+        : "bg-white";
+      const interactionClass = isDisabled ? "opacity-60" : "hover:bg-numo-pill/60";
+      return (
+        <button
+          className={cn(
+            "col-span-2 flex items-center gap-4 rounded-2xl border border-numo-border px-5 py-4 text-left shadow-sm transition",
+            backgroundClass,
+            interactionClass
+          )}
+          disabled={isDisabled}
+          onClick={() => onSelectMaturity(option.id)}
+          type="button"
+        >
+          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-sm">
+            <Waves className="h-6 w-6 text-emerald-700" />
+          </span>
+          <div className="min-w-0">
+            <div className="font-semibold text-base text-numo-ink">
+              {option.aprText} <span className="font-medium text-numo-ink/70">APR</span>
+            </div>
+            <div className="mt-1 text-numo-ink/70 text-sm">{dateLine}</div>
+          </div>
+        </button>
+      );
+    }
+
+    return (
+      <button
+        className={cn(
+          "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
+          isSelected ? "ring-2 ring-numo-ink/10" : "",
+          isDisabled ? "opacity-60" : "hover:bg-numo-pill/60"
+        )}
+        disabled={isDisabled}
+        onClick={() => onSelectMaturity(option.id)}
+        type="button"
+      >
+        <span
+          className={cn(
+            "flex h-10 w-10 items-center justify-center rounded-full",
+            accentClasses(option.accent)
+          )}
+        >
+          <Waves className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <div className="font-semibold text-numo-ink text-sm">
+            {option.aprText} <span className="font-medium text-numo-muted">APR</span>
+          </div>
+          <div className="mt-1 text-numo-muted text-xs">{dateLine}</div>
+        </div>
+      </button>
+    );
+  };
+
   return (
     <div className="mt-10">
       <div className="text-numo-muted text-xs">Available {tokenLabel}-based maturity dates</div>
 
       <div className="mt-4 grid grid-cols-2 gap-4">
-        {left ? (
-          <button
-            className={cn(
-              "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
-              left.id === selectedMaturityId ? "ring-2 ring-numo-ink/10" : "hover:bg-numo-pill/60"
-            )}
-            onClick={() => onSelectMaturity(left.id)}
-            type="button"
-          >
-            <span
-              className={cn(
-                "flex h-10 w-10 items-center justify-center rounded-full",
-                accentClasses(left.accent)
-              )}
-            >
-              <Waves className="h-5 w-5" />
-            </span>
-            <div className="min-w-0">
-              <div className="font-semibold text-numo-ink text-sm">
-                {left.aprText} <span className="font-medium text-numo-muted">APR</span>
-              </div>
-              <div className="mt-1 text-numo-muted text-xs">{left.dateLabel}</div>
-            </div>
-          </button>
-        ) : (
-          <div />
-        )}
+        {left ? renderOption(left, false) : <div />}
 
-        {right ? (
-          <button
-            className={cn(
-              "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
-              right.id === selectedMaturityId ? "ring-2 ring-numo-ink/10" : "hover:bg-numo-pill/60"
-            )}
-            onClick={() => onSelectMaturity(right.id)}
-            type="button"
-          >
-            <span
-              className={cn(
-                "flex h-10 w-10 items-center justify-center rounded-full",
-                accentClasses(right.accent)
-              )}
-            >
-              <Waves className="h-5 w-5" />
-            </span>
-            <div className="min-w-0">
-              <div className="font-semibold text-numo-ink text-sm">
-                {right.aprText} <span className="font-medium text-numo-muted">APR</span>
-              </div>
-              <div className="mt-1 text-numo-muted text-xs">{right.dateLabel}</div>
-            </div>
-          </button>
-        ) : (
-          <div />
-        )}
+        {right ? renderOption(right, false) : <div />}
 
-        {wide ? (
-          <button
-            className={cn(
-              "col-span-2 flex items-center gap-4 rounded-2xl border border-numo-border px-5 py-4 text-left shadow-sm transition",
-              wide.id === selectedMaturityId
-                ? "bg-gradient-to-r from-lime-200 via-emerald-200 to-emerald-500/70"
-                : "bg-white hover:bg-numo-pill/60"
-            )}
-            onClick={() => onSelectMaturity(wide.id)}
-            type="button"
-          >
-            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-sm">
-              <Waves className="h-6 w-6 text-emerald-700" />
-            </span>
-            <div className="min-w-0">
-              <div className="font-semibold text-base text-numo-ink">
-                {wide.aprText} <span className="font-medium text-numo-ink/70">APR</span>
-              </div>
-              <div className="mt-1 text-numo-ink/70 text-sm">{wide.dateLabel}</div>
-            </div>
-          </button>
-        ) : null}
+        {wide ? renderOption(wide, true) : null}
       </div>
     </div>
   );
@@ -1015,7 +1116,10 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
   );
 
   const borrowStepError = getBorrowStepError(token, parsedBorrowKes);
-  const canProceed = Boolean(selectedMaturityId) && borrowStepError === null;
+  const selectedMaturity =
+    maturityOptions.find((option) => option.id === selectedMaturityId) ?? maturityOptions[0];
+  const canProceed =
+    Boolean(selectedMaturityId) && borrowStepError === null && !selectedMaturity?.disabled;
 
   const submitError =
     step !== "collateral"
