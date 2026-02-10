@@ -41,6 +41,8 @@ function readPoolFyBalance() {
 export type BorrowQuote = {
   expectedKesOut: bigint;
   fyToBorrow: bigint;
+  reason?: "INSUFFICIENT_LIQUIDITY" | "PREVIEW_REVERT" | "UNKNOWN";
+  detail?: string;
 };
 
 function clampU128(value: bigint) {
@@ -116,25 +118,48 @@ async function findMinFyForKes(desiredKesOut: bigint, low: bigint, high: bigint)
 // Finds the minimum fyIn such that sellFYTokenPreview(fyIn) >= desiredKesOut.
 export async function quoteFyForKes(desiredKesOut: bigint): Promise<BorrowQuote> {
   if (desiredKesOut <= 0n) {
-    return { expectedKesOut: 0n, fyToBorrow: 0n };
+    return {
+      detail: "Desired output must be > 0.",
+      expectedKesOut: 0n,
+      fyToBorrow: 0n,
+      reason: "UNKNOWN",
+    };
   }
 
   // If the user asks for more base out than the pool can possibly return, quotes will revert or never reach it.
   const [baseBalance, fyBalance] = await Promise.all([readPoolBaseBalance(), readPoolFyBalance()]);
   if (desiredKesOut >= baseBalance) {
-    return { expectedKesOut: 0n, fyToBorrow: 0n };
+    return {
+      detail: `Pool base balance is ${baseBalance.toString()} (raw units), desired is ${desiredKesOut.toString()}.`,
+      expectedKesOut: 0n,
+      fyToBorrow: 0n,
+      reason: "INSUFFICIENT_LIQUIDITY",
+    };
   }
 
   const guess = estimateFyIn(desiredKesOut, baseBalance, fyBalance) ?? desiredKesOut;
   const bounds = await findUpperBound(desiredKesOut, guess);
   if (!bounds) {
-    return { expectedKesOut: 0n, fyToBorrow: 0n };
+    return {
+      detail: "Failed to find a non-reverting upper bound for sellFYTokenPreview.",
+      expectedKesOut: 0n,
+      fyToBorrow: 0n,
+      reason: "PREVIEW_REVERT",
+    };
   }
 
   const fyToBorrow = await findMinFyForKes(desiredKesOut, bounds.low, bounds.high);
   const expectedKesOut = await tryPreviewSellFyToken(fyToBorrow);
   if (expectedKesOut === null || expectedKesOut < desiredKesOut) {
-    return { expectedKesOut: 0n, fyToBorrow: 0n };
+    return {
+      detail:
+        expectedKesOut === null
+          ? "sellFYTokenPreview reverted at final check."
+          : "Preview output below desired.",
+      expectedKesOut: 0n,
+      fyToBorrow: 0n,
+      reason: expectedKesOut === null ? "PREVIEW_REVERT" : "UNKNOWN",
+    };
   }
   return { expectedKesOut, fyToBorrow };
 }

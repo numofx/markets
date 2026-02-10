@@ -256,12 +256,24 @@ function accentClasses(accent: MaturityOption["accent"]) {
 }
 
 function safeParseAmount(value: string, decimals: number) {
-  const numeric = Number.parseFloat(value);
-  if (!value || Number.isNaN(numeric) || numeric <= 0) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  // Accept inputs like ".5" by normalizing to "0.5".
+  const normalizedLeading = trimmed.startsWith(".") ? `0${trimmed}` : trimmed;
+  // Avoid parseUnits throwing on a trailing decimal point while typing (e.g. "1.").
+  const normalized = normalizedLeading.endsWith(".")
+    ? normalizedLeading.slice(0, Math.max(0, normalizedLeading.length - 1))
+    : normalizedLeading;
+
+  const numeric = Number.parseFloat(normalized);
+  if (!normalized || Number.isNaN(numeric) || numeric <= 0) {
     return null;
   }
   try {
-    return parseUnits(value, decimals);
+    return parseUnits(normalized, decimals);
   } catch {
     return null;
   }
@@ -358,7 +370,13 @@ async function runBorrowFlow(params: {
 
   const quote = await quoteFyForKes(params.borrowKesDesired);
   if (quote.fyToBorrow <= 0n) {
-    throw new Error("Quote unavailable.");
+    let hint = "Try a smaller amount.";
+    if (quote.reason === "INSUFFICIENT_LIQUIDITY") {
+      hint = "Pool liquidity is too low for this borrow size. Try a smaller amount.";
+    } else if (quote.reason === "PREVIEW_REVERT") {
+      hint = "Pool quote preview reverted. Try a smaller amount.";
+    }
+    throw new Error(`Quote unavailable. ${hint}`);
   }
 
   params.onStatus("Step 3/4: Supplying collateral and borrowing…");
@@ -671,6 +689,9 @@ function SubmitSection({
   txHash: Hex | null;
   txStatus: string | null;
 }) {
+  // If we don't have a tx hash, treat txStatus as an error/notice and render it inline.
+  // The "status card" is reserved for in-flight / submitted transactions.
+  const inlineStatus = txHash ? null : txStatus;
   return (
     <>
       <button
@@ -686,9 +707,10 @@ function SubmitSection({
         {isSubmitting ? "Submitting…" : "Next Step"}
       </button>
 
-      {submitError ? <div className="mt-3 text-numo-muted text-xs">{submitError}</div> : null}
+      {submitError ? <div className="mt-3 text-rose-700 text-xs">{submitError}</div> : null}
+      {inlineStatus ? <div className="mt-2 text-rose-700 text-xs">{inlineStatus}</div> : null}
 
-      {txStatus || txHash ? (
+      {txHash ? (
         <div className="mt-4 rounded-2xl border border-numo-border bg-white/80 px-4 py-3 text-numo-ink text-sm shadow-sm backdrop-blur">
           <div className="font-semibold">{txStatus ?? "Transaction submitted."}</div>
           {txHash ? <div className="mt-2 break-all text-numo-muted text-xs">{txHash}</div> : null}
@@ -1137,6 +1159,23 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
   const parsedCollateral = safeParseAmount(collateralInput, usdtDecimals);
   const parsedBorrowKes = safeParseAmount(borrowInput, kesDecimals);
 
+  const isSubmittingRef = useRef(false);
+  useEffect(() => {
+    isSubmittingRef.current = isSubmitting;
+  }, [isSubmitting]);
+
+  useEffect(() => {
+    // Clear any previous "quote unavailable" style errors when inputs change.
+    if (isSubmittingRef.current) {
+      return;
+    }
+    void borrowInput;
+    void collateralInput;
+    void selectedMaturityId;
+    setTxStatus(null);
+    setTxHash(null);
+  }, [borrowInput, collateralInput, selectedMaturityId]);
+
   useEffect(() => {
     // Once we know the real maturity id, select it unless the user already picked something else.
     if (
@@ -1157,8 +1196,13 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
   const borrowStepError = getBorrowStepError(token, parsedBorrowKes);
   const selectedMaturity =
     maturityOptions.find((option) => option.id === selectedMaturityId) ?? maturityOptions[0];
-  const canProceed =
-    Boolean(selectedMaturityId) && borrowStepError === null && !selectedMaturity?.disabled;
+  const maturitySelectionError =
+    !selectedMaturityId || selectedMaturityId === "loading" || selectedMaturityId === "error"
+      ? "Loading maturity…"
+      : (selectedMaturity?.disabledReason ??
+        (selectedMaturity?.disabled ? "Maturity unavailable." : null));
+  const borrowNextError = borrowStepError ?? maturitySelectionError;
+  const canProceed = borrowNextError === null;
 
   const effectiveVaultId = vaultId ?? discoveredVault.vaultId;
 
@@ -1204,7 +1248,7 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
           {step === "borrow" ? (
             <BorrowStepView
               borrowInput={borrowInput}
-              borrowStepError={borrowStepError}
+              borrowStepError={borrowNextError}
               canProceed={canProceed}
               maturityOptions={maturityOptions}
               onBorrowChange={(value) => setBorrowInput(value)}
