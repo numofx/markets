@@ -1,6 +1,7 @@
 import type { Address } from "viem";
 import { poolAbi } from "@/lib/abi/pool";
 import { publicClient } from "@/lib/celoClients";
+import { getRevertSelector } from "@/lib/get-revert-selector";
 import { CELO_YIELD_POOL } from "@/src/poolInfo";
 
 const U128_MAX = BigInt("340282366920938463463374607431768211455");
@@ -41,7 +42,13 @@ function readPoolFyBalance() {
 export type BorrowQuote = {
   expectedKesOut: bigint;
   fyToBorrow: bigint;
-  reason?: "INSUFFICIENT_LIQUIDITY" | "PREVIEW_REVERT" | "UNKNOWN";
+  reason?:
+    | "INSUFFICIENT_LIQUIDITY"
+    | "CACHE_GT_LIVE"
+    | "POOL_PENDING"
+    | "NEGATIVE_INTEREST_RATES_NOT_ALLOWED"
+    | "PREVIEW_REVERT"
+    | "UNKNOWN";
   detail?: string;
 };
 
@@ -58,6 +65,40 @@ function estimateFyIn(desiredBaseOut: bigint, poolBaseBalance: bigint, poolFyBal
   }
   // Rough linear estimate using current reserves as price.
   return clampU128((desiredBaseOut * poolFyBalance) / poolBaseBalance);
+}
+
+function isNegativeInterestRatesNotAllowed(caught: unknown) {
+  const selector = getRevertSelector(caught);
+  if (selector === "0xb24d9e1b") {
+    return true;
+  }
+  const message = caught instanceof Error ? caught.message : String(caught ?? "");
+  return message.includes("NegativeInterestRatesNotAllowed");
+}
+
+async function readPoolState() {
+  const [baseBalance, fyBalance, cache] = await Promise.all([
+    readPoolBaseBalance(),
+    readPoolFyBalance(),
+    readPoolCache(),
+  ]);
+  const [baseCached, fyTokenCached] = cache;
+  const cachedGtLive = baseCached > baseBalance || fyTokenCached > fyBalance;
+  const pendingBase = baseBalance > baseCached ? baseBalance - baseCached : 0n;
+  const pendingFy = fyBalance > fyTokenCached ? fyBalance - fyTokenCached : 0n;
+  return {
+    baseBalance,
+    baseCached,
+    cachedGtLive,
+    fyBalance,
+    fyTokenCached,
+    pendingBase,
+    pendingFy,
+  };
+}
+
+function quoteError(reason: BorrowQuote["reason"], detail: string): BorrowQuote {
+  return { detail, expectedKesOut: 0n, fyToBorrow: 0n, reason };
 }
 
 async function findUpperBound(desiredKesOut: bigint, initialGuess: bigint) {
@@ -115,51 +156,66 @@ async function findMinFyForKes(desiredKesOut: bigint, low: bigint, high: bigint)
   return right;
 }
 
+function readPoolCache() {
+  return publicClient.readContract({
+    abi: poolAbi,
+    address: CELO_YIELD_POOL.poolAddress as Address,
+    functionName: "getCache",
+  });
+}
+
 // Finds the minimum fyIn such that sellFYTokenPreview(fyIn) >= desiredKesOut.
 export async function quoteFyForKes(desiredKesOut: bigint): Promise<BorrowQuote> {
   if (desiredKesOut <= 0n) {
-    return {
-      detail: "Desired output must be > 0.",
-      expectedKesOut: 0n,
-      fyToBorrow: 0n,
-      reason: "UNKNOWN",
-    };
+    return quoteError("UNKNOWN", "Desired output must be > 0.");
   }
 
   // If the user asks for more base out than the pool can possibly return, quotes will revert or never reach it.
-  const [baseBalance, fyBalance] = await Promise.all([readPoolBaseBalance(), readPoolFyBalance()]);
-  if (desiredKesOut >= baseBalance) {
-    return {
-      detail: `Pool base balance is ${baseBalance.toString()} (raw units), desired is ${desiredKesOut.toString()}.`,
-      expectedKesOut: 0n,
-      fyToBorrow: 0n,
-      reason: "INSUFFICIENT_LIQUIDITY",
-    };
+  const state = await readPoolState();
+  if (state.cachedGtLive) {
+    return quoteError(
+      "CACHE_GT_LIVE",
+      `Pool cache exceeds live balances. baseCached=${state.baseCached.toString()} baseLive=${state.baseBalance.toString()} fyCached=${state.fyTokenCached.toString()} fyLive=${state.fyBalance.toString()}.`
+    );
+  }
+  if (state.pendingBase !== 0n || state.pendingFy !== 0n) {
+    return quoteError(
+      "POOL_PENDING",
+      `Pool has pending (unprocessed) balances. basePending=${state.pendingBase.toString()} fyPending=${state.pendingFy.toString()}.`
+    );
+  }
+  if (desiredKesOut >= state.baseBalance) {
+    return quoteError(
+      "INSUFFICIENT_LIQUIDITY",
+      `Pool base balance is ${state.baseBalance.toString()} (raw units), desired is ${desiredKesOut.toString()}.`
+    );
   }
 
-  const guess = estimateFyIn(desiredKesOut, baseBalance, fyBalance) ?? desiredKesOut;
+  const guess = estimateFyIn(desiredKesOut, state.baseBalance, state.fyBalance) ?? desiredKesOut;
   const bounds = await findUpperBound(desiredKesOut, guess);
   if (!bounds) {
-    return {
-      detail: "Failed to find a non-reverting upper bound for sellFYTokenPreview.",
-      expectedKesOut: 0n,
-      fyToBorrow: 0n,
-      reason: "PREVIEW_REVERT",
-    };
+    return quoteError(
+      "PREVIEW_REVERT",
+      "Failed to find a non-reverting upper bound for sellFYTokenPreview."
+    );
   }
 
   const fyToBorrow = await findMinFyForKes(desiredKesOut, bounds.low, bounds.high);
-  const expectedKesOut = await tryPreviewSellFyToken(fyToBorrow);
-  if (expectedKesOut === null || expectedKesOut < desiredKesOut) {
-    return {
-      detail:
-        expectedKesOut === null
-          ? "sellFYTokenPreview reverted at final check."
-          : "Preview output below desired.",
-      expectedKesOut: 0n,
-      fyToBorrow: 0n,
-      reason: expectedKesOut === null ? "PREVIEW_REVERT" : "UNKNOWN",
-    };
+  let expectedKesOut: bigint;
+  try {
+    expectedKesOut = await previewSellFyToken(fyToBorrow);
+  } catch (caught) {
+    return quoteError(
+      isNegativeInterestRatesNotAllowed(caught)
+        ? "NEGATIVE_INTEREST_RATES_NOT_ALLOWED"
+        : "PREVIEW_REVERT",
+      isNegativeInterestRatesNotAllowed(caught)
+        ? "Pool rejected preview: negative interest rates not allowed."
+        : "sellFYTokenPreview reverted at final check."
+    );
+  }
+  if (expectedKesOut < desiredKesOut) {
+    return quoteError("UNKNOWN", "Preview output below desired.");
   }
   return { expectedKesOut, fyToBorrow };
 }

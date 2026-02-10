@@ -19,6 +19,7 @@ export async function approveUsdtJoin(params: {
   walletClient: WalletClient;
   account: Address;
   amount: bigint;
+  nonce?: number;
 }): Promise<BorrowTxResult> {
   const txHash = await params.walletClient.writeContract({
     abi: erc20Abi,
@@ -27,6 +28,7 @@ export async function approveUsdtJoin(params: {
     args: [BORROW_CONFIG.joins.usdt as Address, params.amount],
     chain: celo,
     functionName: "approve",
+    nonce: params.nonce,
   });
   await publicClient.waitForTransactionReceipt({ hash: txHash });
   return { txHash };
@@ -35,6 +37,7 @@ export async function approveUsdtJoin(params: {
 export async function buildVault(params: {
   walletClient: WalletClient;
   account: Address;
+  nonce?: number;
 }): Promise<BuildVaultResult> {
   const simulation = await publicClient.simulateContract({
     abi: ladleAbi,
@@ -43,7 +46,11 @@ export async function buildVault(params: {
     args: [BORROW_CONFIG.seriesId.fyKesm as Hex, BORROW_CONFIG.ilk.usdt as Hex, 0],
     functionName: "build",
   });
-  const txHash = await params.walletClient.writeContract(simulation.request);
+  const txHash = await params.walletClient.writeContract({
+    ...simulation.request,
+    chain: celo,
+    nonce: params.nonce,
+  });
   await publicClient.waitForTransactionReceipt({ hash: txHash });
   return { txHash, vaultId: simulation.result as Hex };
 }
@@ -55,6 +62,7 @@ export async function pour(params: {
   to?: Address;
   ink: bigint;
   art: bigint;
+  nonce?: number;
 }): Promise<BorrowTxResult> {
   const simulation = await publicClient.simulateContract({
     abi: ladleAbi,
@@ -63,7 +71,11 @@ export async function pour(params: {
     args: [params.vaultId, params.to ?? params.account, params.ink, params.art],
     functionName: "pour",
   });
-  const txHash = await params.walletClient.writeContract(simulation.request);
+  const txHash = await params.walletClient.writeContract({
+    ...simulation.request,
+    chain: celo,
+    nonce: params.nonce,
+  });
   await publicClient.waitForTransactionReceipt({ hash: txHash });
   return { txHash };
 }
@@ -81,6 +93,7 @@ export async function sellFyKes(params: {
   walletClient: WalletClient;
   account: Address;
   minKesOut: bigint;
+  nonce?: number;
 }): Promise<BorrowTxResult> {
   const txHash = await params.walletClient.writeContract({
     abi: poolAbi,
@@ -89,6 +102,7 @@ export async function sellFyKes(params: {
     args: [params.account, params.minKesOut],
     chain: celo,
     functionName: "sellFYToken",
+    nonce: params.nonce,
   });
   await publicClient.waitForTransactionReceipt({ hash: txHash });
   return { txHash };

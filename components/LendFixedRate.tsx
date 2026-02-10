@@ -19,6 +19,7 @@ import { erc20Abi } from "@/lib/abi/erc20";
 import { poolAbi } from "@/lib/abi/pool";
 import { publicClient } from "@/lib/celoClients";
 import { cn } from "@/lib/cn";
+import { getRevertSelector } from "@/lib/get-revert-selector";
 import { usePoolReads } from "@/lib/usePoolReads";
 import { usePrivyAddress } from "@/lib/usePrivyAddress";
 import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
@@ -52,42 +53,6 @@ const TOKEN_ICON_SRC = {
 const U128_MAX = BigInt("340282366920938463463374607431768211455");
 const DEFAULT_SLIPPAGE_BPS = 50n;
 const WALLET_TIMEOUT_MS = 120_000;
-const REVERT_SELECTOR_REGEX = /0x[a-fA-F0-9]{8}/;
-
-function getRevertSelector(caught: unknown) {
-  const maybeAny = caught as {
-    data?: unknown;
-    message?: string;
-    shortMessage?: string;
-    cause?: unknown;
-  };
-
-  let data: string | null = null;
-  if (typeof maybeAny?.data === "string") {
-    data = maybeAny.data;
-  } else {
-    const causeData = (maybeAny?.cause as { data?: unknown } | undefined)?.data;
-    if (typeof causeData === "string") {
-      data = causeData;
-    }
-  }
-
-  const selectorFromData = data?.startsWith("0x") && data.length >= 10 ? data.slice(0, 10) : null;
-  if (selectorFromData) {
-    return selectorFromData;
-  }
-
-  let messageForSelector = "";
-  if (typeof maybeAny?.shortMessage === "string") {
-    messageForSelector = maybeAny.shortMessage;
-  } else if (typeof maybeAny?.message === "string") {
-    messageForSelector = maybeAny.message;
-  } else if (caught instanceof Error && caught.message) {
-    messageForSelector = caught.message;
-  }
-
-  return messageForSelector.match(REVERT_SELECTOR_REGEX)?.[0] ?? null;
-}
 
 type MaturityOption = {
   id: string;

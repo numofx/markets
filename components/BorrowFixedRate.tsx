@@ -9,6 +9,7 @@ import { erc20Abi } from "@/lib/abi/erc20";
 import { poolAbi } from "@/lib/abi/pool";
 import { publicClient } from "@/lib/celoClients";
 import { cn } from "@/lib/cn";
+import { getRevertSelector } from "@/lib/get-revert-selector";
 import { useBorrowVaultDiscovery } from "@/lib/useBorrowVaultDiscovery";
 import { useBorrowVaultId } from "@/lib/useBorrowVaultId";
 import { useBorrowWalletData } from "@/lib/useBorrowWalletData";
@@ -85,8 +86,12 @@ function toWad(value: bigint, decimals: number) {
 }
 
 function isNegativeInterestRatesNotAllowed(caught: unknown) {
+  const selector = getRevertSelector(caught);
+  if (selector === "0xb24d9e1b") {
+    return true;
+  }
   const message = caught instanceof Error ? caught.message : String(caught ?? "");
-  return message.includes("0xb24d9e1b") || message.includes("NegativeInterestRatesNotAllowed");
+  return message.includes("NegativeInterestRatesNotAllowed");
 }
 
 type BorrowAprContext = {
@@ -330,6 +335,23 @@ function CollateralIcon({ collateralId }: { collateralId: CollateralOption["id"]
   );
 }
 
+function quoteUnavailableHint(reason: string | undefined) {
+  switch (reason) {
+    case "INSUFFICIENT_LIQUIDITY":
+      return "Pool liquidity is too low for this borrow size. Try a smaller amount.";
+    case "CACHE_GT_LIVE":
+      return "Pool cache exceeds live balances. Pool state appears inconsistent; try again later or perform a small sync trade/mint to refresh the pool.";
+    case "POOL_PENDING":
+      return "Pool has pending (unprocessed) balances, likely from a previous failed trade or a token transfer without a swap/mint. Sync the pool (a successful mint/burn/trade) and try again.";
+    case "NEGATIVE_INTEREST_RATES_NOT_ALLOWED":
+      return "Pool rejected the trade (negative interest rates not allowed). Try a smaller amount.";
+    case "PREVIEW_REVERT":
+      return "Pool quote preview reverted. Try a smaller amount.";
+    default:
+      return "Try a smaller amount.";
+  }
+}
+
 async function runBorrowFlow(params: {
   account: Address;
   walletClient: WalletClient;
@@ -342,21 +364,35 @@ async function runBorrowFlow(params: {
   onTxHash: (hash: Hex) => void;
   persistVaultId: (vaultId: Hex) => void;
 }) {
+  // Privy/wallet providers can occasionally race nonces for multi-tx flows.
+  // We manage nonces ourselves to keep tx ordering deterministic.
+  let nextNonce = await publicClient.getTransactionCount({
+    address: params.account,
+    blockTag: "pending",
+  });
+
   const needsApproval = params.allowance === null || params.allowance < params.collateral;
   if (needsApproval) {
     params.onStatus("Step 1/4: Approving USDT…");
     const approval = await approveUsdtJoin({
       account: params.account,
       amount: params.collateral,
+      nonce: nextNonce,
       walletClient: params.walletClient,
     });
+    nextNonce += 1;
     params.onTxHash(approval.txHash);
   }
 
   let nextVaultId: Hex | null = params.vaultId;
   if (!nextVaultId) {
     params.onStatus("Step 2/4: Building vault…");
-    const built = await buildVault({ account: params.account, walletClient: params.walletClient });
+    const built = await buildVault({
+      account: params.account,
+      nonce: nextNonce,
+      walletClient: params.walletClient,
+    });
+    nextNonce += 1;
     nextVaultId = built.vaultId;
     params.onTxHash(built.txHash);
     params.persistVaultId(nextVaultId);
@@ -370,13 +406,7 @@ async function runBorrowFlow(params: {
 
   const quote = await quoteFyForKes(params.borrowKesDesired);
   if (quote.fyToBorrow <= 0n) {
-    let hint = "Try a smaller amount.";
-    if (quote.reason === "INSUFFICIENT_LIQUIDITY") {
-      hint = "Pool liquidity is too low for this borrow size. Try a smaller amount.";
-    } else if (quote.reason === "PREVIEW_REVERT") {
-      hint = "Pool quote preview reverted. Try a smaller amount.";
-    }
-    throw new Error(`Quote unavailable. ${hint}`);
+    throw new Error(`Quote unavailable. ${quoteUnavailableHint(quote.reason)}`);
   }
 
   params.onStatus("Step 3/4: Supplying collateral and borrowing…");
@@ -384,10 +414,12 @@ async function runBorrowFlow(params: {
     account: params.account,
     art: quote.fyToBorrow,
     ink: params.collateral,
+    nonce: nextNonce,
     to: CELO_YIELD_POOL.poolAddress as Address,
     vaultId: nextVaultId,
     walletClient: params.walletClient,
   });
+  nextNonce += 1;
   params.onTxHash(result.txHash);
 
   const slippageBps = 50n;
@@ -396,8 +428,10 @@ async function runBorrowFlow(params: {
   const swapResult = await sellFyKes({
     account: params.account,
     minKesOut,
+    nonce: nextNonce,
     walletClient: params.walletClient,
   });
+  nextNonce += 1;
   params.onTxHash(swapResult.txHash);
 
   return { vaultId: nextVaultId };
