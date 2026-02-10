@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Check, ChevronDown, ThumbsDown, Waves } from "lucide-react";
+import { ArrowLeft, Check, ChevronDown, ThumbsDown, ThumbsUp, Waves } from "lucide-react";
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
 import type { Address, Hex, WalletClient } from "viem";
@@ -9,8 +9,10 @@ import { erc20Abi } from "@/lib/abi/erc20";
 import { poolAbi } from "@/lib/abi/pool";
 import { publicClient } from "@/lib/celoClients";
 import { cn } from "@/lib/cn";
+import { useBorrowVaultDiscovery } from "@/lib/useBorrowVaultDiscovery";
 import { useBorrowVaultId } from "@/lib/useBorrowVaultId";
 import { useBorrowWalletData } from "@/lib/useBorrowWalletData";
+import { useKesmPerUsdRate } from "@/lib/useKesmPerUsdRate";
 import { usePrivyAddress } from "@/lib/usePrivyAddress";
 import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
 import { aprFromPriceWad, formatAprPercent, WAD } from "@/src/apr";
@@ -800,6 +802,32 @@ function formatVaultId(vaultId: Hex) {
   return `${clean.slice(0, 10)}…${clean.slice(-6)}`;
 }
 
+function computeCollateralizationPercent(params: {
+  collateral: bigint | null;
+  collateralDecimals: number;
+  debt: bigint | null;
+  debtDecimals: number;
+  kesmPerUsdWad: bigint | null;
+}) {
+  if (!(params.collateral && params.debt && params.kesmPerUsdWad)) {
+    return null;
+  }
+  if (params.collateral <= 0n || params.debt <= 0n) {
+    return null;
+  }
+  // Assume 1 USDT ~= 1 USD, then convert USD value into KESm using onchain oracle rate.
+  const collateralUsdWad = (params.collateral * WAD) / 10n ** BigInt(params.collateralDecimals);
+  const collateralKesmWad = (collateralUsdWad * params.kesmPerUsdWad) / WAD;
+  const debtWad = (params.debt * WAD) / 10n ** BigInt(params.debtDecimals);
+  if (debtWad <= 0n) {
+    return null;
+  }
+  const ratioWad = (collateralKesmWad * WAD) / debtWad; // (KESm collateral value) / (KESm debt)
+  const percentWad = ratioWad * 100n;
+  const percent = Number.parseFloat(formatUnits(percentWad, 18));
+  return Number.isFinite(percent) ? percent : null;
+}
+
 function getBorrowStepError(token: TokenOption["id"], parsedBorrowKes: bigint | null) {
   if (token !== "KESm") {
     return "Borrowing USDT is not supported yet.";
@@ -970,10 +998,10 @@ function CollateralStepView(params: {
   collateralMenuRef: React.RefObject<HTMLDivElement | null>;
   onToggleCollateralMenu: () => void;
   onCloseCollateralMenu: () => void;
+  collateralizationPercent: number | null;
   vaultId: Hex | null;
-  useExistingVault: boolean;
-  onSelectExistingVault: () => void;
-  onSelectNewVault: () => void;
+  vaultDiscoveryStatus: "idle" | "loading" | "ready" | "error";
+  vaultDiscoveryError: string | null;
   canSubmit: boolean;
   isSubmitting: boolean;
   onSubmit: () => void;
@@ -982,6 +1010,21 @@ function CollateralStepView(params: {
   txStatus: string | null;
   onBack: () => void;
 }) {
+  let vaultLabel = "No vault found.";
+  if (params.vaultDiscoveryStatus === "loading") {
+    vaultLabel = "Searching onchain…";
+  }
+  if (params.vaultId) {
+    vaultLabel = formatVaultId(params.vaultId);
+  }
+
+  const collateralizationLabel =
+    params.collateralizationPercent === null
+      ? "—"
+      : `${params.collateralizationPercent.toFixed(0)}%`;
+  const collateralOk =
+    params.collateralizationPercent !== null && params.collateralizationPercent >= 110;
+
   return (
     <>
       <button
@@ -996,11 +1039,15 @@ function CollateralStepView(params: {
       <div className="grid grid-cols-2 items-center gap-4">
         <div className="relative flex h-28 w-28 items-center justify-center">
           <div className="absolute inset-0 rounded-full border-8 border-numo-pill" />
-          <ThumbsDown className="h-8 w-8 text-rose-500" />
+          {collateralOk ? (
+            <ThumbsUp className="h-8 w-8 text-emerald-700" />
+          ) : (
+            <ThumbsDown className="h-8 w-8 text-rose-500" />
+          )}
         </div>
         <div className="text-center">
           <div className="text-numo-muted text-sm">Collateralization</div>
-          <div className="font-semibold text-2xl text-numo-ink">0%</div>
+          <div className="font-semibold text-2xl text-numo-ink">{collateralizationLabel}</div>
         </div>
       </div>
 
@@ -1019,34 +1066,17 @@ function CollateralStepView(params: {
 
       <div className="mt-4">
         <div className="text-numo-muted text-xs">Add to an existing vault</div>
-        <div className="mt-2 grid gap-2">
-          <button
-            className={cn(
-              "flex items-center justify-between rounded-2xl border border-numo-border bg-white px-4 py-3 text-left text-numo-ink shadow-sm transition",
-              params.useExistingVault ? "ring-2 ring-numo-ink/10" : "hover:bg-numo-pill/60",
-              params.vaultId ? "" : "opacity-50"
-            )}
-            disabled={!params.vaultId}
-            onClick={params.onSelectExistingVault}
-            type="button"
-          >
-            <span className="font-semibold text-sm">
-              Use Existing Vault {params.vaultId ? `(${formatVaultId(params.vaultId)})` : null}
-            </span>
-            {params.useExistingVault ? <Check className="h-5 w-5 text-emerald-700" /> : null}
-          </button>
-
-          <button
-            className={cn(
-              "flex items-center justify-between rounded-2xl border border-numo-border bg-white px-4 py-3 text-left text-numo-ink shadow-sm transition",
-              params.useExistingVault ? "hover:bg-numo-pill/60" : "ring-2 ring-numo-ink/10"
-            )}
-            onClick={params.onSelectNewVault}
-            type="button"
-          >
-            <span className="font-semibold text-sm">Create New Vault</span>
-            {params.useExistingVault ? null : <Check className="h-5 w-5 text-emerald-700" />}
-          </button>
+        <div className="mt-2 rounded-2xl border border-numo-border bg-white px-4 py-3 text-numo-ink shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="font-semibold text-sm">Use Existing Vault</div>
+              <div className="mt-1 text-numo-muted text-xs">{vaultLabel}</div>
+              {params.vaultDiscoveryError ? (
+                <div className="mt-1 text-numo-muted text-xs">{params.vaultDiscoveryError}</div>
+              ) : null}
+            </div>
+            {params.vaultId ? <Check className="h-5 w-5 shrink-0 text-emerald-700" /> : null}
+          </div>
         </div>
       </div>
 
@@ -1087,6 +1117,13 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
     userAddress,
   });
 
+  const discoveredVault = useBorrowVaultDiscovery({
+    cauldronAddress: BORROW_CONFIG.core.cauldron as Address,
+    ilkId: BORROW_CONFIG.ilk.usdt as Hex,
+    seriesId: BORROW_CONFIG.seriesId.fyKesm as Hex,
+    userAddress,
+  });
+
   const { kesDecimals, refetch, usdtAllowance, usdtBalance, usdtDecimals } = useBorrowWalletData({
     fyToken: BORROW_CONFIG.tokens.fyKesm as Address,
     kesToken: BORROW_CONFIG.tokens.kesm as Address,
@@ -1094,6 +1131,8 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
     usdtToken: BORROW_CONFIG.tokens.usdt as Address,
     userAddress,
   });
+
+  const { kesmPerUsdWad } = useKesmPerUsdRate();
 
   const parsedCollateral = safeParseAmount(collateralInput, usdtDecimals);
   const parsedBorrowKes = safeParseAmount(borrowInput, kesDecimals);
@@ -1121,6 +1160,17 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
   const canProceed =
     Boolean(selectedMaturityId) && borrowStepError === null && !selectedMaturity?.disabled;
 
+  const effectiveVaultId = vaultId ?? discoveredVault.vaultId;
+
+  useEffect(() => {
+    if (!vaultId && discoveredVault.vaultId) {
+      setVaultId(discoveredVault.vaultId);
+      if (typeof window !== "undefined" && storageKey) {
+        window.localStorage.setItem(storageKey, discoveredVault.vaultId);
+      }
+    }
+  }, [discoveredVault.vaultId, setVaultId, storageKey, vaultId]);
+
   const submitError =
     step !== "collateral"
       ? null
@@ -1134,16 +1184,10 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
             walletClient,
           });
           const networkError = isCelo ? null : "Switch wallet network to Celo (42220).";
-          return networkError ?? validationError;
+          const vaultError = effectiveVaultId ? null : "No existing vault found for this maturity.";
+          return networkError ?? validationError ?? vaultError;
         })();
   const canSubmit = Boolean(selectedMaturityId) && !submitError;
-
-  const [useExistingVault, setUseExistingVault] = useState<boolean>(true);
-  useEffect(() => {
-    setUseExistingVault(Boolean(vaultId));
-  }, [vaultId]);
-
-  const effectiveVaultId = useExistingVault ? vaultId : null;
 
   return (
     <div className={cn("w-full", className)}>
@@ -1185,6 +1229,13 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
             <CollateralStepView
               canSubmit={canSubmit}
               collateralInput={collateralInput}
+              collateralizationPercent={computeCollateralizationPercent({
+                collateral: parsedCollateral,
+                collateralDecimals: usdtDecimals,
+                debt: parsedBorrowKes,
+                debtDecimals: kesDecimals,
+                kesmPerUsdWad,
+              })}
               collateralMenuOpen={collateralMenuOpen}
               collateralMenuRef={collateralMenuRef}
               isSubmitting={isSubmitting}
@@ -1197,8 +1248,6 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
                 }
                 setCollateralInput(formatUnits(usdtBalance, usdtDecimals));
               }}
-              onSelectExistingVault={() => setUseExistingVault(true)}
-              onSelectNewVault={() => setUseExistingVault(false)}
               onSubmit={() => {
                 void handleBorrowSubmit({
                   isCelo,
@@ -1223,8 +1272,9 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
               txStatus={txStatus}
               usdtBalance={usdtBalance}
               usdtDecimals={usdtDecimals}
-              useExistingVault={useExistingVault}
-              vaultId={vaultId}
+              vaultDiscoveryError={discoveredVault.error}
+              vaultDiscoveryStatus={discoveredVault.status}
+              vaultId={effectiveVaultId}
             />
           )}
         </div>
