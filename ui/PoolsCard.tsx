@@ -1,12 +1,17 @@
 "use client";
 
 import Image from "next/image";
+import { useState } from "react";
 import { cn } from "@/lib/cn";
 import { useKesmPerUsdRate } from "@/lib/useKesmPerUsdRate";
 import { usePoolFeeApr } from "@/lib/usePoolFeeApr";
 import { usePoolReads } from "@/lib/usePoolReads";
+import { usePrivyAddress } from "@/lib/usePrivyAddress";
 import { WAD } from "@/src/apr";
 import { CELO_YIELD_POOL } from "@/src/poolInfo";
+import { AddLiquidityModal } from "@/ui/AddLiquidityModal";
+import { Button } from "@/ui/Button";
+import { SmartLink } from "@/ui/SmartLink";
 
 type PoolsCardProps = {
   className?: string;
@@ -120,8 +125,10 @@ function formatMaturityDateLabel(maturitySeconds: number) {
 }
 
 export function PoolsCard({ className }: PoolsCardProps) {
+  const [addLiquidityOpen, setAddLiquidityOpen] = useState(false);
+  const userAddress = usePrivyAddress();
   const { maturity, poolBaseBalance, poolFyBalance, baseDecimals, fyDecimals, g1, g2 } =
-    usePoolReads();
+    usePoolReads(userAddress);
   const { kesmPerUsdWad } = useKesmPerUsdRate();
   const { aprPercent: poolFeeAprPercent } = usePoolFeeApr();
   const poolName = `${CELO_YIELD_POOL.baseToken.symbol}/${CELO_YIELD_POOL.fyToken.symbol}`;
@@ -184,6 +191,7 @@ export function PoolsCard({ className }: PoolsCardProps) {
             <tr className="text-[11px] text-numo-muted/70 uppercase tracking-[0.18em]">
               <th className="w-12 px-4 py-4 font-semibold">#</th>
               <th className="px-4 py-4 font-semibold">Pool</th>
+              <th className="px-4 py-4 text-right font-semibold">Add</th>
               <th className="px-4 py-4 font-semibold">Fee</th>
               <th className="px-4 py-4 font-semibold">Maturity</th>
               <th className="px-4 py-4 text-right font-semibold">TVL</th>
@@ -217,16 +225,24 @@ export function PoolsCard({ className }: PoolsCardProps) {
                   </div>
                   <div>
                     <p className="font-semibold text-numo-ink">{poolName}</p>
-                    <a
+                    <SmartLink
                       className="text-[11px] text-numo-muted underline-offset-2 hover:text-numo-ink"
                       href={CELO_YIELD_POOL.explorerUrl}
-                      rel="noreferrer"
-                      target="_blank"
                     >
                       {shortAddress(CELO_YIELD_POOL.poolAddress)}
-                    </a>
+                    </SmartLink>
                   </div>
                 </div>
+              </td>
+              <td className="whitespace-nowrap px-4 py-5 text-right">
+                <Button
+                  onClick={() => setAddLiquidityOpen(true)}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
+                  Add liquidity
+                </Button>
               </td>
               <td className="whitespace-nowrap px-4 py-5 text-numo-ink">{feeText}</td>
               <td className="whitespace-nowrap px-4 py-5 text-numo-ink">{maturityLabel}</td>
@@ -240,6 +256,12 @@ export function PoolsCard({ className }: PoolsCardProps) {
           </tbody>
         </table>
       </div>
+
+      <AddLiquidityModal
+        feeText={feeText}
+        onOpenChange={setAddLiquidityOpen}
+        open={addLiquidityOpen}
+      />
     </div>
   );
 }
