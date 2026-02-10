@@ -13,7 +13,7 @@ import Image from "next/image";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import { useEffect, useRef, useState } from "react";
 import type { Address, Hex } from "viem";
-import { formatUnits, parseUnits } from "viem";
+import { decodeEventLog, formatUnits, parseUnits } from "viem";
 import { celo } from "viem/chains";
 import { erc20Abi } from "@/lib/abi/erc20";
 import { poolAbi } from "@/lib/abi/pool";
@@ -53,6 +53,42 @@ const TOKEN_ICON_SRC = {
 const U128_MAX = BigInt("340282366920938463463374607431768211455");
 const DEFAULT_SLIPPAGE_BPS = 50n;
 const WALLET_TIMEOUT_MS = 120_000;
+
+function sumErc20TransfersTo(params: {
+  logs: readonly { address: Address; data: Hex; topics: readonly Hex[] }[];
+  tokenAddress: Address;
+  to: Address;
+}) {
+  let total = 0n;
+  for (const log of params.logs) {
+    if (log.address.toLowerCase() !== params.tokenAddress.toLowerCase()) {
+      continue;
+    }
+    if (log.topics.length === 0) {
+      continue;
+    }
+
+    try {
+      const decoded = decodeEventLog({
+        abi: erc20Abi,
+        data: log.data,
+        topics: [...log.topics] as [Hex, ...Hex[]],
+      });
+      if (decoded.eventName !== "Transfer") {
+        continue;
+      }
+      const { to, value } = decoded.args as { from: Address; to: Address; value: bigint };
+      if (to.toLowerCase() !== params.to.toLowerCase()) {
+        continue;
+      }
+      total += value;
+    } catch {
+      // Ignore non-ERC20 Transfer logs on this address.
+    }
+  }
+
+  return total;
+}
 
 type MaturityOption = {
   id: string;
@@ -332,6 +368,8 @@ async function handleLendClick(params: {
   fyToken: Address | null;
   onConfirmedFyBalance: (balance: bigint) => void;
   onResetConfirmedFyBalance: () => void;
+  onConfirmedFyReceived: (received: bigint) => void;
+  onResetConfirmedFyReceived: () => void;
   setStep: Dispatch<SetStateAction<LendStep>>;
   setSwapTxHash: Dispatch<SetStateAction<Hex | null>>;
   setTxError: Dispatch<SetStateAction<string | null>>;
@@ -339,6 +377,7 @@ async function handleLendClick(params: {
 }) {
   params.setTxError(null);
   params.onResetConfirmedFyBalance();
+  params.onResetConfirmedFyReceived();
   params.setSwapTxHash(null);
 
   try {
@@ -372,10 +411,18 @@ async function handleLendClick(params: {
     params.refetchPoolReads();
     if (params.fyToken) {
       try {
+        const received = sumErc20TransfersTo({
+          logs: receipt.swapReceiptLogs,
+          to: result.context.account,
+          tokenAddress: params.fyToken,
+        });
+        params.onConfirmedFyReceived(received);
+
         const nextFyBal = await publicClient.readContract({
           abi: erc20Abi,
           address: params.fyToken,
           args: [result.context.account],
+          blockNumber: receipt.swapBlockNumber,
           functionName: "balanceOf",
         });
         params.onConfirmedFyBalance(nextFyBal);
@@ -522,7 +569,12 @@ async function executeLendBaseToFy(params: {
   baseToken: Address;
   onPhase: (phase: LendTxPhase) => void;
   walletClient: NonNullable<ReturnType<typeof usePrivyWalletClient>["walletClient"]>;
-}): Promise<{ transferHash: Hex; swapHash: Hex }> {
+}): Promise<{
+  swapBlockNumber: bigint;
+  swapHash: Hex;
+  swapReceiptLogs: readonly { address: Address; data: Hex; topics: readonly Hex[] }[];
+  transferHash: Hex;
+}> {
   // Preflight quote: if this reverts (eg NegativeInterestRatesNotAllowed), we abort before wallet prompts.
   const fyOut = await publicClient.readContract({
     abi: poolAbi,
@@ -565,9 +617,18 @@ async function executeLendBaseToFy(params: {
   );
 
   params.onPhase("swap_pending");
-  await publicClient.waitForTransactionReceipt({ hash: swapHash });
+  const swapReceipt = await publicClient.waitForTransactionReceipt({ hash: swapHash });
 
-  return { swapHash, transferHash };
+  return {
+    swapBlockNumber: swapReceipt.blockNumber,
+    swapHash,
+    swapReceiptLogs: swapReceipt.logs as unknown as readonly {
+      address: Address;
+      data: Hex;
+      topics: readonly Hex[];
+    }[],
+    transferHash,
+  };
 }
 
 function computeRedeemableAtMaturity(params: {
@@ -948,6 +1009,7 @@ function LendTransactionConfirmation(props: {
   onBack: () => void;
   onReset: () => void;
   positionLabel: string | null;
+  positionDeltaLabel: string | null;
   positionMaturityLabel: string;
   phase: LendTxPhase;
   swapTxHash: Hex | null;
@@ -1052,6 +1114,11 @@ function LendTransactionConfirmation(props: {
                   <div className="text-numo-muted text-xs">
                     Balance:{" "}
                     <span className="font-medium text-numo-ink">{props.positionLabel ?? "—"}</span>
+                    {props.positionDeltaLabel ? (
+                      <span className="ml-2 font-medium text-emerald-700">
+                        (+{props.positionDeltaLabel})
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -1102,6 +1169,49 @@ function LendTransactionConfirmation(props: {
   );
 }
 
+function LendConfirmStep(props: {
+  amount: string;
+  className?: string;
+  confirmedFyBalance: bigint | null;
+  confirmedFyReceived: bigint | null;
+  fyDecimals: number | null;
+  fySymbol: string | null;
+  onBack: () => void;
+  onReset: () => void;
+  positionMaturityLabel: string;
+  swapTxHash: Hex | null;
+  tokenLabel: string;
+  txError: string | null;
+  txPhase: LendTxPhase;
+  userFyBal: bigint | null | undefined;
+}) {
+  const fyBalanceForUi = props.confirmedFyBalance ?? props.userFyBal ?? null;
+  const positionLabel =
+    fyBalanceForUi !== null && props.fyDecimals !== null
+      ? `${formatUnitsTruncated(fyBalanceForUi, props.fyDecimals, 2)} ${props.fySymbol ?? "fyToken"}`
+      : null;
+  const positionDeltaLabel =
+    props.confirmedFyReceived !== null && props.fyDecimals !== null
+      ? `${formatUnitsTruncated(props.confirmedFyReceived, props.fyDecimals, 2)} ${props.fySymbol ?? "fyToken"}`
+      : null;
+
+  return (
+    <LendTransactionConfirmation
+      amount={props.amount}
+      className={props.className}
+      onBack={props.onBack}
+      onReset={props.onReset}
+      phase={props.txPhase}
+      positionDeltaLabel={positionDeltaLabel}
+      positionLabel={positionLabel}
+      positionMaturityLabel={props.positionMaturityLabel}
+      swapTxHash={props.swapTxHash}
+      tokenLabel={props.tokenLabel}
+      txError={props.txError}
+    />
+  );
+}
+
 export function LendFixedRate({ className }: LendFixedRateProps) {
   const userAddress = usePrivyAddress();
   const {
@@ -1127,6 +1237,7 @@ export function LendFixedRate({ className }: LendFixedRateProps) {
   const [txError, setTxError] = useState<string | null>(null);
   const [swapTxHash, setSwapTxHash] = useState<Hex | null>(null);
   const [confirmedFyBalance, setConfirmedFyBalance] = useState<bigint | null>(null);
+  const [confirmedFyReceived, setConfirmedFyReceived] = useState<bigint | null>(null);
 
   useDefaultMaturitySelection({
     maturityOptions,
@@ -1165,7 +1276,9 @@ export function LendFixedRate({ className }: LendFixedRateProps) {
       fyToken: fyToken ?? null,
       isCelo,
       onConfirmedFyBalance: (balance) => setConfirmedFyBalance(balance),
+      onConfirmedFyReceived: (received) => setConfirmedFyReceived(received),
       onResetConfirmedFyBalance: () => setConfirmedFyBalance(null),
+      onResetConfirmedFyReceived: () => setConfirmedFyReceived(null),
       refetchPoolReads: refetch,
       setStep,
       setSwapTxHash,
@@ -1178,16 +1291,14 @@ export function LendFixedRate({ className }: LendFixedRateProps) {
   };
 
   if (step === "confirm") {
-    const fyBalanceForUi = confirmedFyBalance ?? userFyBal ?? null;
-    const positionLabel =
-      fyBalanceForUi !== null && fyDecimals !== null
-        ? `${formatUnitsTruncated(fyBalanceForUi, fyDecimals, 2)} ${fySymbol ?? "fyToken"}`
-        : null;
-
     return (
-      <LendTransactionConfirmation
+      <LendConfirmStep
         amount={amount}
         className={className}
+        confirmedFyBalance={confirmedFyBalance}
+        confirmedFyReceived={confirmedFyReceived}
+        fyDecimals={fyDecimals}
+        fySymbol={fySymbol}
         onBack={() => {
           if (txPhase === "done" || txPhase === "error" || txPhase === "idle") {
             setStep("review");
@@ -1196,17 +1307,18 @@ export function LendFixedRate({ className }: LendFixedRateProps) {
         onReset={() => {
           setAmount("");
           setConfirmedFyBalance(null);
+          setConfirmedFyReceived(null);
           setSwapTxHash(null);
           setTxError(null);
           setTxPhase("idle");
           setStep("form");
         }}
-        phase={txPhase}
-        positionLabel={positionLabel}
         positionMaturityLabel={selectedMaturity?.dateLabel ?? "—"}
         swapTxHash={swapTxHash}
         tokenLabel={selectedToken.label}
         txError={txError}
+        txPhase={txPhase}
+        userFyBal={userFyBal}
       />
     );
   }
