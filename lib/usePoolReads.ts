@@ -15,6 +15,8 @@ type UsePoolReadsResult = {
   poolBaseBalance: bigint | null;
   poolFyBalance: bigint | null;
   maturity: number | null;
+  g1: bigint | null;
+  g2: bigint | null;
   baseDecimals: number | null;
   fyDecimals: number | null;
   baseSymbol: string | null;
@@ -29,6 +31,8 @@ type PoolSnapshot = {
   fyToken: Address;
   baseDecimals: bigint;
   maturity: number;
+  g1: bigint | null;
+  g2: bigint | null;
   baseBalance: bigint;
   fyBalance: bigint;
   baseSymbol: string;
@@ -53,6 +57,17 @@ async function readPoolSnapshot(userAddress?: Address): Promise<PoolSnapshot> {
         { abi: poolAbi, address: poolAddress, functionName: "getFYTokenBalance" },
       ],
     });
+
+  const feeResults = await publicClient.multicall({
+    allowFailure: true,
+    contracts: [
+      { abi: poolAbi, address: poolAddress, functionName: "g1" },
+      { abi: poolAbi, address: poolAddress, functionName: "g2" },
+    ],
+  });
+
+  const g1 = feeResults[0].status === "success" ? feeResults[0].result : null;
+  const g2 = feeResults[1].status === "success" ? feeResults[1].result : null;
 
   const [baseSymbol, fySymbol, baseTokenDecimals, fyTokenDecimals] = await publicClient.multicall({
     allowFailure: false,
@@ -86,6 +101,8 @@ async function readPoolSnapshot(userAddress?: Address): Promise<PoolSnapshot> {
     fyBalance,
     fySymbol,
     fyToken,
+    g1,
+    g2,
     maturity,
     tokenDecimals: [Number(baseTokenDecimals), Number(fyTokenDecimals)],
     userBaseBal,
@@ -142,6 +159,8 @@ export function usePoolReads(userAddress?: Address): UsePoolReadsResult {
     fyDecimals: snapshot ? snapshot.tokenDecimals[1] : null,
     fySymbol: snapshot?.fySymbol ?? null,
     fyToken: snapshot?.fyToken ?? null,
+    g1: snapshot?.g1 ?? null,
+    g2: snapshot?.g2 ?? null,
     loading,
     maturity: snapshot?.maturity ?? null,
     poolBaseBalance: snapshot?.baseBalance ?? null,

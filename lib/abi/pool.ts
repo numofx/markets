@@ -5,6 +5,9 @@ export const poolAbi = parseAbi([
   "function fyToken() view returns (address)",
   "function baseDecimals() view returns (uint256)",
   "function maturity() view returns (uint32)",
+  // Yield v2 pool fee parameters (64.64 fixed point, g1 <= 2^64 <= g2). See pools using YieldSpace math.
+  "function g1() view returns (uint128)",
+  "function g2() view returns (uint128)",
   "function getBaseBalance() view returns (uint128)",
   "function getFYTokenBalance() view returns (uint128)",
   "function sellBase(address to, uint128 min) returns (uint128)",
