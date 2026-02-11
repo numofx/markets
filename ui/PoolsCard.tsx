@@ -124,6 +124,15 @@ function formatMaturityDateLabel(maturitySeconds: number) {
   }).format(new Date(maturitySeconds * 1000));
 }
 
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 text-left">
+      <div className="text-gray-500 text-xs">{label}</div>
+      <div className="mt-1 font-semibold text-black text-sm">{value}</div>
+    </div>
+  );
+}
+
 export function PoolsCard({ className }: PoolsCardProps) {
   const [addLiquidityOpen, setAddLiquidityOpen] = useState(false);
   const userAddress = usePrivyAddress();
@@ -169,39 +178,22 @@ export function PoolsCard({ className }: PoolsCardProps) {
   });
 
   return (
-    <div
-      className={cn(
-        "w-full rounded-3xl border border-numo-border bg-white/80 p-6 shadow-lg backdrop-blur",
-        className
-      )}
-    >
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h2 className="font-semibold text-numo-ink text-xl">Pools</h2>
-          <p className="mt-1 text-numo-muted text-xs">Available yield pools on Celo.</p>
-        </div>
-        <span className="rounded-full border border-numo-border bg-numo-pill px-3 py-1 text-numo-muted text-xs">
-          1 pool
-        </span>
-      </div>
+    <div className={cn("w-full", className)}>
+      <div className="relative mx-auto w-full max-w-md">
+        <div
+          aria-hidden="true"
+          className="-inset-10 absolute rounded-3xl bg-neutral-200/60 opacity-70 blur-3xl"
+        />
 
-      <div className="mt-6 overflow-x-auto rounded-2xl border border-numo-border bg-white shadow-sm">
-        <table className="w-full min-w-[860px] text-left text-numo-muted text-xs">
-          <thead className="border-numo-border/70 border-b bg-white">
-            <tr className="text-[11px] text-numo-muted/70 uppercase tracking-[0.18em]">
-              <th className="w-12 px-4 py-4 font-semibold">#</th>
-              <th className="px-4 py-4 font-semibold">Pool</th>
-              <th className="px-4 py-4 text-right font-semibold">Add</th>
-              <th className="px-4 py-4 font-semibold">Fee</th>
-              <th className="px-4 py-4 font-semibold">Maturity</th>
-              <th className="px-4 py-4 text-right font-semibold">TVL</th>
-              <th className="px-4 py-4 text-right font-semibold">Pool APR</th>
-            </tr>
-          </thead>
-          <tbody className="text-sm">
-            <tr className="border-numo-border/50 border-b">
-              <td className="px-4 py-5 font-semibold text-numo-ink">1</td>
-              <td className="w-64 px-4 py-5">
+        <div className="relative rounded-3xl border border-numo-border bg-white/92 p-8 shadow-xl backdrop-blur">
+          <header>
+            <h1 className="font-semibold text-2xl text-black">Pools</h1>
+            <p className="mt-1 text-gray-500 text-sm">Available yield pools on Celo.</p>
+          </header>
+
+          <div className="mt-8">
+            <div className="rounded-2xl border border-numo-border bg-white px-5 py-5 text-left shadow-sm transition hover:bg-numo-pill/20">
+              <div className="min-w-0">
                 <div className="flex items-center gap-3">
                   <div className="-space-x-2 flex">
                     <span className="flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border border-white bg-numo-accent/10">
@@ -223,45 +215,47 @@ export function PoolsCard({ className }: PoolsCardProps) {
                       />
                     </span>
                   </div>
-                  <div>
-                    <p className="font-semibold text-numo-ink">{poolName}</p>
+                  <div className="min-w-0">
+                    <div className="truncate font-semibold text-black text-sm">{poolName}</div>
                     <SmartLink
-                      className="text-[11px] text-numo-muted underline-offset-2 hover:text-numo-ink"
+                      className="mt-1 inline-block text-gray-500 text-xs underline-offset-2 hover:text-black"
                       href={CELO_YIELD_POOL.explorerUrl}
                     >
                       {shortAddress(CELO_YIELD_POOL.poolAddress)}
                     </SmartLink>
                   </div>
                 </div>
-              </td>
-              <td className="whitespace-nowrap px-4 py-5 text-right">
+              </div>
+
+              <div className="mt-7 grid grid-cols-3 gap-6">
+                <Metric label="APR" value={formatPercent(poolFeeAprPercent)} />
+                <Metric label="TVL" value={formatUsd(tvlUsd)} />
+                <Metric label="Maturity" value={maturityLabel} />
+              </div>
+
+              <div className="mt-5 text-gray-500 text-sm">Fee: {feeText}</div>
+
+              <div className="mt-4">
                 <Button
+                  className="h-12 w-full rounded-2xl bg-black px-4 text-sm text-white hover:bg-neutral-800"
                   onClick={() => setAddLiquidityOpen(true)}
-                  size="sm"
+                  size="md"
                   type="button"
-                  variant="secondary"
+                  variant="primary"
                 >
                   Add liquidity
                 </Button>
-              </td>
-              <td className="whitespace-nowrap px-4 py-5 text-numo-ink">{feeText}</td>
-              <td className="whitespace-nowrap px-4 py-5 text-numo-ink">{maturityLabel}</td>
-              <td className="whitespace-nowrap px-4 py-5 text-right text-numo-ink">
-                {formatUsd(tvlUsd)}
-              </td>
-              <td className="whitespace-nowrap px-4 py-5 text-right text-numo-ink">
-                {formatPercent(poolFeeAprPercent)}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+              </div>
+            </div>
+          </div>
 
-      <AddLiquidityModal
-        feeText={feeText}
-        onOpenChange={setAddLiquidityOpen}
-        open={addLiquidityOpen}
-      />
+          <AddLiquidityModal
+            feeText={feeText}
+            onOpenChange={setAddLiquidityOpen}
+            open={addLiquidityOpen}
+          />
+        </div>
+      </div>
     </div>
   );
 }
