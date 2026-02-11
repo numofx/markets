@@ -13,6 +13,8 @@ import { yieldPoolMintHelperAbi, yieldPoolMintHelperBytecode } from "@/lib/abi/y
 import { publicClient } from "@/lib/celoClients";
 import { cn } from "@/lib/cn";
 import { getRevertSelector } from "@/lib/get-revert-selector";
+import type { MintErrorHint } from "@/lib/mint-revert";
+import { decodeMintErrorHint, getRevertInfo } from "@/lib/mint-revert";
 import { usePoolReads } from "@/lib/usePoolReads";
 import { usePrivyAddress } from "@/lib/usePrivyAddress";
 import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
@@ -24,6 +26,23 @@ const DEFAULT_RATIO_SLIPPAGE_BPS = 200n;
 const WALLET_TIMEOUT_MS = 120_000;
 
 type WalletClient = NonNullable<ReturnType<typeof usePrivyWalletClient>["walletClient"]>;
+type NonceState = { next: number };
+
+class MintFlowError extends Error {
+  readonly hint: MintErrorHint;
+
+  constructor(message: string, hint: MintErrorHint) {
+    super(message);
+    this.name = "MintFlowError";
+    this.hint = hint;
+  }
+}
+
+function takeNonce(state: NonceState) {
+  const value = state.next;
+  state.next += 1;
+  return value;
+}
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string) {
   return new Promise<T>((resolve, reject) => {
@@ -77,6 +96,96 @@ function assertReceiptSuccess(params: { status: unknown; context: string }) {
   if (params.status === "reverted") {
     throw new Error(`${params.context} reverted.`);
   }
+}
+
+function formatUtcMaturityLabel(maturitySeconds: number) {
+  return new Intl.DateTimeFormat("en-US", {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "short",
+    timeZone: "UTC",
+    year: "numeric",
+  }).format(new Date(maturitySeconds * 1000));
+}
+
+function formatRatioWad(value: bigint) {
+  return Number.parseFloat(formatUnits(value, 18)).toLocaleString(undefined, {
+    maximumFractionDigits: 6,
+  });
+}
+
+function formatTokenAmount(value: bigint, decimals: number) {
+  return Number.parseFloat(formatUnits(value, decimals)).toLocaleString(undefined, {
+    maximumFractionDigits: 6,
+  });
+}
+
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Centralized mapping keeps all mint error UX in one place.
+function formatContractFailure(params: {
+  caught: unknown;
+  fallback: string;
+  relaxRatioCheck: boolean;
+  baseDecimals?: number;
+  baseSymbol?: string;
+  helperAddress?: Address | null;
+  poolAddress?: Address | null;
+}) {
+  const { caught, fallback, relaxRatioCheck } = params;
+  const revertInfo = getRevertInfo(caught, {
+    helperAddress: params.helperAddress ?? null,
+    poolAddress: params.poolAddress ?? null,
+  });
+  const selector = revertInfo.selector ?? getRevertSelector(caught);
+  const hint = decodeMintErrorHint(caught, {
+    helperAddress: params.helperAddress ?? null,
+    poolAddress: params.poolAddress ?? null,
+  });
+  let sourceSuffix = "";
+  if (revertInfo.contractAddress && revertInfo.decodedAgainst === "unknown") {
+    sourceSuffix = ` (source: unknown @ ${revertInfo.contractAddress})`;
+  } else if (revertInfo.contractAddress && revertInfo.decodedAgainst === "helper") {
+    sourceSuffix = ` (source: helper @ ${revertInfo.contractAddress})`;
+  }
+
+  if (hint?.kind === "slippageDuringMint") {
+    if (hint.newRatio === 0n && hint.minRatio === 0n && hint.maxRatio === 0n) {
+      return `Pool rejected mint ratio bounds (revert ${hint.selector}). Click Auto, try smaller size, or enable "Relax ratio check".${sourceSuffix}`;
+    }
+    if (relaxRatioCheck) {
+      return `Pool rejected mint ratio bounds (revert ${hint.selector}). new=${formatRatioWad(hint.newRatio)}, min=${formatRatioWad(hint.minRatio)}, max=${formatRatioWad(hint.maxRatio)}. Try smaller size or retry after pool updates.${sourceSuffix}`;
+    }
+    return `Pool rejected mint ratio bounds (revert ${hint.selector}). new=${formatRatioWad(hint.newRatio)}, min=${formatRatioWad(hint.minRatio)}, max=${formatRatioWad(hint.maxRatio)}. Click Auto or enable "Relax ratio check", then retry.${sourceSuffix}`;
+  }
+
+  if (hint?.kind === "notEnoughBase") {
+    if (hint.baseAvailable === 0n && hint.baseNeeded === 0n) {
+      return `Mint failed: NotEnoughBaseIn (revert ${hint.selector}). Increase base amount or reduce fy amount, then retry.${sourceSuffix}`;
+    }
+    if (params.baseDecimals !== undefined && params.baseSymbol) {
+      const shortfall =
+        hint.baseNeeded > hint.baseAvailable ? hint.baseNeeded - hint.baseAvailable : 0n;
+      return `Mint failed: NotEnoughBaseIn (revert ${hint.selector}). Pool sees ${formatUnits(hint.baseAvailable, params.baseDecimals)} ${params.baseSymbol} available but needs ${formatUnits(hint.baseNeeded, params.baseDecimals)} ${params.baseSymbol} (shortfall ${formatUnits(shortfall, params.baseDecimals)}). Click "Fix ratio (set base = needed)".${sourceSuffix}`;
+    }
+    return `Mint failed: NotEnoughBaseIn (revert ${hint.selector}). Increase base amount or reduce fy amount, then retry.${sourceSuffix}`;
+  }
+
+  if (selector === "0x68744619" && revertInfo.decodedAgainst === "helper") {
+    return `Mint failed (pool rejected input ratio). Reverted via helper: ${selector} (details unavailable). Increase base slightly (start +1%) or reduce fy, then retry.`;
+  }
+
+  if (selector === "0xd48b6b81" && revertInfo.decodedAgainst === "helper") {
+    return `Mint reverted via helper (revert ${selector}). Underlying pool likely returned SlippageDuringMint, but args were not exposed by the helper call path. Click Auto, try smaller size, or enable "Relax ratio check".${sourceSuffix}`;
+  }
+
+  const maybeAny = caught as { shortMessage?: string; message?: string };
+  let base = fallback;
+  if (typeof maybeAny?.shortMessage === "string") {
+    base = maybeAny.shortMessage;
+  } else if (typeof maybeAny?.message === "string") {
+    base = maybeAny.message;
+  }
+  return selector ? `${base} (revert ${selector})${sourceSuffix}` : `${base}${sourceSuffix}`;
 }
 
 function requireWalletContext(params: {
@@ -163,7 +272,11 @@ function cacheHelperAddress(address: Address) {
   window.localStorage.setItem(HELPER_STORAGE_KEY, address);
 }
 
-async function getOrDeployMintHelper(params: { walletClient: WalletClient; userAddress: Address }) {
+async function getOrDeployMintHelper(params: {
+  walletClient: WalletClient;
+  userAddress: Address;
+  nonceState: NonceState;
+}) {
   const cached = readCachedHelperAddress();
   if (cached) {
     return cached;
@@ -175,6 +288,7 @@ async function getOrDeployMintHelper(params: { walletClient: WalletClient; userA
     bytecode: `0x${string}`;
     chain: typeof celo;
     args: readonly [];
+    nonce?: number;
   };
   type DeployCapableWalletClient = WalletClient & {
     deployContract: (params: DeployContractParams) => Promise<`0x${string}`>;
@@ -187,6 +301,7 @@ async function getOrDeployMintHelper(params: { walletClient: WalletClient; userA
       args: [],
       bytecode: yieldPoolMintHelperBytecode,
       chain: celo,
+      nonce: takeNonce(params.nonceState),
     }),
     WALLET_TIMEOUT_MS,
     "Wallet confirmation timed out. Re-open your wallet and approve the deployment."
@@ -211,6 +326,7 @@ async function ensureAllowance(params: {
   token: Address;
   spender: Address;
   amount: bigint;
+  nonceState: NonceState;
 }) {
   const allowance = (await publicClient.readContract({
     abi: erc20Abi,
@@ -233,6 +349,7 @@ async function ensureAllowance(params: {
         args: [params.spender, 0n],
         chain: celo,
         functionName: "approve",
+        nonce: takeNonce(params.nonceState),
       }),
       WALLET_TIMEOUT_MS,
       "Wallet confirmation timed out. Re-open your wallet and approve the transaction."
@@ -249,6 +366,7 @@ async function ensureAllowance(params: {
       args: [params.spender, params.amount],
       chain: celo,
       functionName: "approve",
+      nonce: takeNonce(params.nonceState),
     }),
     WALLET_TIMEOUT_MS,
     "Wallet confirmation timed out. Re-open your wallet and approve the transaction."
@@ -258,42 +376,35 @@ async function ensureAllowance(params: {
 }
 
 async function readPoolRatioWad(params: { poolAddress: Address }) {
-  const [cacheRaw, totalSupplyRaw, baseBalanceRaw, fyBalanceRaw] = await publicClient.multicall({
-    allowFailure: false,
-    contracts: [
-      { abi: poolAbi, address: params.poolAddress, functionName: "getCache" },
-      { abi: erc20Abi, address: params.poolAddress, functionName: "totalSupply" },
-      { abi: poolAbi, address: params.poolAddress, functionName: "getBaseBalance" },
-      { abi: poolAbi, address: params.poolAddress, functionName: "getFYTokenBalance" },
-    ],
-  });
-
-  const cache = cacheRaw as unknown as readonly [bigint, bigint, number];
-  const totalSupply = totalSupplyRaw as unknown as bigint;
-  const baseBalance = baseBalanceRaw as unknown as bigint;
-  const fyBalance = fyBalanceRaw as unknown as bigint;
-
-  const baseCached = cache[0];
-  const fyCached = cache[1];
-
-  // If the pool has "pending" tokens (balances don't match cache), minting can behave unexpectedly.
-  // Safer to fail fast and ask the user to try again later.
-  if (baseBalance !== baseCached || fyBalance !== fyCached) {
-    throw new Error("Pool is mid-update (pending balances). Try again in a minute.");
-  }
+  const snapshot = await readPoolCacheSnapshot({ poolAddress: params.poolAddress });
+  const isPending =
+    snapshot.baseBalance !== snapshot.baseCached || snapshot.fyBalance !== snapshot.fyCached;
 
   // Yield v2 pool cache holds fyToken reserves plus outstanding LP supply.
-  // Real fyToken reserves are `fyCached - (totalSupply - 1)` (with edge cases).
-  const totalSupplyMinusOne = totalSupply > 0n ? totalSupply - 1n : 0n;
-  const realFyCached = fyCached > totalSupplyMinusOne ? fyCached - totalSupplyMinusOne : 0n;
-  if (realFyCached <= 0n) {
+  // For mint ratio bounds and user quoting, use observable pool balances.
+  // This matches how users provide liquidity and avoids overstating required base amounts.
+  const baseForRatio = isPending ? snapshot.baseBalance : snapshot.baseCached;
+  const fyForRatio = isPending ? snapshot.fyBalance : snapshot.fyCached;
+  if (fyForRatio <= 0n) {
     return null;
   }
 
-  return (baseCached * 10n ** 18n) / realFyCached;
+  return (baseForRatio * 10n ** 18n) / fyForRatio;
 }
 
-async function assertPoolClean(params: { poolAddress: Address }) {
+type PoolCacheSnapshot = {
+  baseCached: bigint;
+  fyCached: bigint;
+  baseBalance: bigint;
+  fyBalance: bigint;
+};
+
+type PendingDeltaSnapshot = {
+  baseDelta: bigint;
+  fyDelta: bigint;
+};
+
+async function readPoolCacheSnapshot(params: { poolAddress: Address }): Promise<PoolCacheSnapshot> {
   const [cacheRaw, baseBalanceRaw, fyBalanceRaw] = await publicClient.multicall({
     allowFailure: false,
     contracts: [
@@ -302,17 +413,160 @@ async function assertPoolClean(params: { poolAddress: Address }) {
       { abi: poolAbi, address: params.poolAddress, functionName: "getFYTokenBalance" },
     ],
   });
-
   const cache = cacheRaw as unknown as readonly [bigint, bigint, number];
-  const baseBalance = baseBalanceRaw as unknown as bigint;
-  const fyBalance = fyBalanceRaw as unknown as bigint;
 
-  const baseCached = cache[0];
-  const fyCached = cache[1];
+  return {
+    baseBalance: baseBalanceRaw as unknown as bigint,
+    baseCached: cache[0],
+    fyBalance: fyBalanceRaw as unknown as bigint,
+    fyCached: cache[1],
+  };
+}
 
-  if (baseBalance !== baseCached || fyBalance !== fyCached) {
-    throw new Error("Pool is mid-update (pending balances). Try again in a minute.");
+async function readPendingDeltas(params: { poolAddress: Address }): Promise<PendingDeltaSnapshot> {
+  const snapshot = await readPoolCacheSnapshot(params);
+  return {
+    baseDelta: snapshot.baseBalance - snapshot.baseCached,
+    fyDelta: snapshot.fyBalance - snapshot.fyCached,
+  };
+}
+
+function formatSignedDelta(value: bigint, decimals: number, symbol: string) {
+  const absolute = value < 0n ? -value : value;
+  const direction = value < 0n ? "-" : "+";
+  return `${direction}${formatUnits(absolute, decimals)} ${symbol}`;
+}
+
+function formatPendingDeltaLabel(params: {
+  deltas: PendingDeltaSnapshot;
+  baseDecimals: number;
+  fyDecimals: number;
+  baseSymbol: string;
+  fySymbol: string;
+}) {
+  return `${formatSignedDelta(params.deltas.baseDelta, params.baseDecimals, params.baseSymbol)}, ${formatSignedDelta(params.deltas.fyDelta, params.fyDecimals, params.fySymbol)}`;
+}
+
+type PoolSyncFunctionName = "retrieveBase" | "retrieveFYToken" | "sellBase" | "sellFYToken";
+
+async function runPoolSyncAction(params: {
+  functionName: PoolSyncFunctionName;
+  poolAddress: Address;
+  userAddress: Address;
+  walletClient: WalletClient;
+  nonceState: NonceState;
+}) {
+  const args =
+    params.functionName === "sellBase" || params.functionName === "sellFYToken"
+      ? ([params.userAddress, 0n] as const)
+      : ([params.userAddress] as const);
+
+  const hash = await withTimeout(
+    params.walletClient.writeContract({
+      abi: poolAbi,
+      account: params.userAddress,
+      address: params.poolAddress,
+      args,
+      chain: celo,
+      functionName: params.functionName,
+      nonce: takeNonce(params.nonceState),
+    }),
+    WALLET_TIMEOUT_MS,
+    "Wallet confirmation timed out. Re-open your wallet and approve the transaction."
+  );
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  assertReceiptSuccess({ context: `${params.functionName}`, status: receipt.status });
+
+  return hash;
+}
+
+async function recoverOrSyncPool(params: {
+  poolAddress: Address;
+  userAddress: Address | undefined;
+  walletClient: WalletClient | null;
+  baseDecimals: number | null;
+  fyDecimals: number | null;
+  baseSymbol: string;
+  fySymbol: string;
+}) {
+  if (!(params.userAddress && params.walletClient)) {
+    throw new Error("Connect a wallet to recover pool state.");
   }
+  if (params.baseDecimals === null || params.fyDecimals === null) {
+    throw new Error("Pool data not ready.");
+  }
+
+  const deltas = await readPendingDeltas({ poolAddress: params.poolAddress });
+  if (deltas.baseDelta === 0n && deltas.fyDelta === 0n) {
+    return {
+      summary: "Pool has no pending balances.",
+      txHash: null,
+    };
+  }
+
+  const nonceState: NonceState = {
+    next: await publicClient.getTransactionCount({
+      address: params.userAddress,
+      blockTag: "pending",
+    }),
+  };
+
+  const prefersFyRecovery = deltas.fyDelta > 0n;
+  const primaryAction: PoolSyncFunctionName = prefersFyRecovery
+    ? "retrieveFYToken"
+    : "retrieveBase";
+  const fallbackAction: PoolSyncFunctionName = prefersFyRecovery ? "sellFYToken" : "sellBase";
+
+  try {
+    const txHash = await runPoolSyncAction({
+      functionName: primaryAction,
+      nonceState,
+      poolAddress: params.poolAddress,
+      userAddress: params.userAddress,
+      walletClient: params.walletClient,
+    });
+    return {
+      summary: `Pool sync sent via ${primaryAction}.`,
+      txHash,
+    };
+  } catch {
+    const txHash = await runPoolSyncAction({
+      functionName: fallbackAction,
+      nonceState,
+      poolAddress: params.poolAddress,
+      userAddress: params.userAddress,
+      walletClient: params.walletClient,
+    });
+    return {
+      summary: `Pool sync sent via ${fallbackAction} fallback.`,
+      txHash,
+    };
+  }
+}
+
+async function assertPoolMintableState(params: {
+  poolAddress: Address;
+  baseDecimals: number;
+  fyDecimals: number;
+  baseSymbol: string;
+  fySymbol: string;
+}) {
+  const snapshot = await readPoolCacheSnapshot({ poolAddress: params.poolAddress });
+  const baseDelta = snapshot.baseBalance - snapshot.baseCached;
+  const fyDelta = snapshot.fyBalance - snapshot.fyCached;
+
+  if (baseDelta === 0n && fyDelta === 0n) {
+    return;
+  }
+
+  const baseDeltaAbs = baseDelta < 0n ? -baseDelta : baseDelta;
+  const fyDeltaAbs = fyDelta < 0n ? -fyDelta : fyDelta;
+  const baseDir = baseDelta >= 0n ? "+" : "-";
+  const fyDir = fyDelta >= 0n ? "+" : "-";
+
+  throw new Error(
+    `Pool is mid-update (pending balances): ${baseDir}${formatUnits(baseDeltaAbs, params.baseDecimals)} ${params.baseSymbol}, ${fyDir}${formatUnits(fyDeltaAbs, params.fyDecimals)} ${params.fySymbol}. Minting is disabled for this pool state; wait for sync and retry.`
+  );
 }
 
 async function readMintRatios(params: { poolAddress: Address; ratioSlippageBps: bigint }) {
@@ -326,18 +580,54 @@ async function readMintRatios(params: { poolAddress: Address; ratioSlippageBps: 
   return { maxRatio, minRatio };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Combines multiple onchain log decoding paths to avoid false LP/refund attribution.
 function decodeTransfers(params: {
   logs: readonly { address: Address; data: `0x${string}`; topics: readonly `0x${string}`[] }[];
   userAddress: Address;
   poolAddress: Address;
+  helperAddress?: Address | null;
   baseToken: Address;
   fyToken: Address;
 }) {
   let mintedLp = 0n;
-  let baseRefund = 0n;
-  let fyRefund = 0n;
+  let baseSentFromUser = 0n;
+  let baseReceivedByUser = 0n;
+  let fySentFromUser = 0n;
+  let fyReceivedByUser = 0n;
+  let mintedFromLiquidity: bigint | null = null;
+
+  const poolLower = params.poolAddress.toLowerCase();
+  const userLower = params.userAddress.toLowerCase();
+  const baseLower = params.baseToken.toLowerCase();
+  const fyLower = params.fyToken.toLowerCase();
+  const helperLower = params.helperAddress?.toLowerCase() ?? null;
+  const scopedCounterparties = new Set<string>([poolLower]);
+  if (helperLower && helperLower !== poolLower) {
+    scopedCounterparties.add(helperLower);
+  }
 
   for (const log of params.logs) {
+    if (log.address.toLowerCase() === poolLower) {
+      try {
+        const topics = [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]];
+        const decodedPoolLog = decodeEventLog({
+          abi: poolAbi,
+          data: log.data,
+          topics,
+        });
+
+        if (decodedPoolLog.eventName === "Liquidity") {
+          const to = (decodedPoolLog.args.to as Address).toLowerCase();
+          const poolTokens = decodedPoolLog.args.poolTokens as bigint;
+          if (to === userLower && poolTokens > 0n) {
+            mintedFromLiquidity = (mintedFromLiquidity ?? 0n) + poolTokens;
+          }
+        }
+      } catch {
+        // Ignore non-pool events.
+      }
+    }
+
     try {
       const topics = [...log.topics] as [] | [`0x${string}`, ...`0x${string}`[]];
       const decoded = decodeEventLog({
@@ -349,37 +639,54 @@ function decodeTransfers(params: {
         continue;
       }
 
-      const from = decoded.args.from as Address;
-      const to = decoded.args.to as Address;
+      const from = (decoded.args.from as Address).toLowerCase();
+      const to = (decoded.args.to as Address).toLowerCase();
       const value = decoded.args.value as bigint;
 
-      if (log.address === params.poolAddress && from === zeroAddress && to === params.userAddress) {
+      if (log.address.toLowerCase() === poolLower && from === zeroAddress && to === userLower) {
         mintedLp += value;
       }
 
-      if (
-        log.address === params.baseToken &&
-        from === params.poolAddress &&
-        to === params.userAddress
-      ) {
-        baseRefund += value;
+      if (log.address.toLowerCase() === baseLower) {
+        if (from === userLower && scopedCounterparties.has(to)) {
+          baseSentFromUser += value;
+        }
+        if (to === userLower && scopedCounterparties.has(from)) {
+          baseReceivedByUser += value;
+        }
       }
 
-      if (
-        log.address === params.fyToken &&
-        from === params.poolAddress &&
-        to === params.userAddress
-      ) {
-        fyRefund += value;
+      if (log.address.toLowerCase() === fyLower) {
+        if (from === userLower && scopedCounterparties.has(to)) {
+          fySentFromUser += value;
+        }
+        if (to === userLower && scopedCounterparties.has(from)) {
+          fyReceivedByUser += value;
+        }
       }
     } catch {
       // Ignore non-ERC20 Transfer logs and any decoding mismatches.
     }
   }
 
-  return { baseRefund, fyRefund, mintedLp };
+  if (mintedFromLiquidity !== null) {
+    mintedLp = mintedFromLiquidity;
+  }
+
+  const baseUsed =
+    baseSentFromUser > baseReceivedByUser ? baseSentFromUser - baseReceivedByUser : 0n;
+  const fyUsed = fySentFromUser > fyReceivedByUser ? fySentFromUser - fyReceivedByUser : 0n;
+  const baseRefund =
+    baseReceivedByUser > baseSentFromUser ? baseReceivedByUser - baseSentFromUser : 0n;
+  const fyRefund = fyReceivedByUser > fySentFromUser ? fyReceivedByUser - fySentFromUser : 0n;
+
+  const totalSentFromUser = baseSentFromUser + fySentFromUser;
+  const amountsUnavailable = mintedLp > 0n && totalSentFromUser === 0n;
+
+  return { amountsUnavailable, baseRefund, baseUsed, fyRefund, fyUsed, mintedLp };
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Single flow keeps wallet tx ordering and guards coherent.
 async function addLiquidityFlow(params: {
   baseAmount: string;
   fyAmount: string;
@@ -418,8 +725,20 @@ async function addLiquidityFlow(params: {
   });
 
   const ratioBps = parseRatioSlippageBps(params.ratioSlippageBps);
+  const nonceState: NonceState = {
+    next: await publicClient.getTransactionCount({
+      address: ctx.userAddress,
+      blockTag: "pending",
+    }),
+  };
 
-  await assertPoolClean({ poolAddress: params.poolAddress });
+  await assertPoolMintableState({
+    baseDecimals: ctx.baseDecimals,
+    baseSymbol: params.pool.baseSymbol ?? CELO_YIELD_POOL.baseToken.symbol,
+    fyDecimals: ctx.fyDecimals,
+    fySymbol: params.pool.fySymbol ?? CELO_YIELD_POOL.fyToken.symbol,
+    poolAddress: params.poolAddress,
+  });
 
   const { maxRatio, minRatio } = params.relaxRatioCheck
     ? { maxRatio: MAX_UINT256, minRatio: 0n }
@@ -429,12 +748,62 @@ async function addLiquidityFlow(params: {
       });
 
   const helperAddress = await getOrDeployMintHelper({
+    nonceState,
     userAddress: ctx.userAddress,
     walletClient: ctx.walletClient,
   });
 
+  try {
+    await publicClient.simulateContract({
+      abi: yieldPoolMintHelperAbi,
+      account: ctx.userAddress,
+      address: helperAddress,
+      args: [
+        params.poolAddress,
+        ctx.baseToken,
+        ctx.fyToken,
+        baseParsed,
+        fyParsed,
+        minRatio,
+        maxRatio,
+      ],
+      functionName: "mintTwoSided",
+    });
+  } catch (caught) {
+    const hint = decodeMintErrorHint(caught, {
+      helperAddress,
+      poolAddress: params.poolAddress,
+    });
+    throw new MintFlowError(
+      formatContractFailure({
+        baseDecimals: ctx.baseDecimals,
+        baseSymbol: params.pool.baseSymbol ?? CELO_YIELD_POOL.baseToken.symbol,
+        caught,
+        fallback: "Failed to add liquidity.",
+        helperAddress,
+        poolAddress: params.poolAddress,
+        relaxRatioCheck: params.relaxRatioCheck,
+      }),
+      hint
+    );
+  }
+
+  if (process.env.NODE_ENV === "development") {
+    const snapshot = await readPoolCacheSnapshot({ poolAddress: params.poolAddress });
+    // Debug surface for mint failures.
+    // eslint-disable-next-line no-console
+    console.debug("[AddLiquidityModal] mint-attempt", {
+      cachedBase: snapshot.baseCached.toString(),
+      liveBase: snapshot.baseBalance.toString(),
+      pendingBase: (snapshot.baseBalance - snapshot.baseCached).toString(),
+      userBaseIn: baseParsed.toString(),
+      userFYIn: fyParsed.toString(),
+    });
+  }
+
   await ensureAllowance({
     amount: baseParsed,
+    nonceState,
     spender: helperAddress,
     token: ctx.baseToken,
     userAddress: ctx.userAddress,
@@ -442,6 +811,7 @@ async function addLiquidityFlow(params: {
   });
   await ensureAllowance({
     amount: fyParsed,
+    nonceState,
     spender: helperAddress,
     token: ctx.fyToken,
     userAddress: ctx.userAddress,
@@ -450,6 +820,32 @@ async function addLiquidityFlow(params: {
 
   let txHash: `0x${string}`;
   try {
+    await publicClient.simulateContract({
+      abi: yieldPoolMintHelperAbi,
+      account: ctx.userAddress,
+      address: helperAddress,
+      args: [
+        params.poolAddress,
+        ctx.baseToken,
+        ctx.fyToken,
+        baseParsed,
+        fyParsed,
+        minRatio,
+        maxRatio,
+      ],
+      functionName: "mintTwoSided",
+    });
+
+    // Re-check pending balances right before wallet confirmation for mint.
+    // Pool state can change between simulation and send (e.g. during approvals/user delay).
+    await assertPoolMintableState({
+      baseDecimals: ctx.baseDecimals,
+      baseSymbol: params.pool.baseSymbol ?? CELO_YIELD_POOL.baseToken.symbol,
+      fyDecimals: ctx.fyDecimals,
+      fySymbol: params.pool.fySymbol ?? CELO_YIELD_POOL.fyToken.symbol,
+      poolAddress: params.poolAddress,
+    });
+
     txHash = await withTimeout(
       ctx.walletClient.writeContract({
         abi: yieldPoolMintHelperAbi,
@@ -466,22 +862,52 @@ async function addLiquidityFlow(params: {
         ],
         chain: celo,
         functionName: "mintTwoSided",
+        nonce: takeNonce(nonceState),
       }),
       WALLET_TIMEOUT_MS,
       "Wallet confirmation timed out. Re-open your wallet and approve the transaction."
     );
   } catch (caught) {
-    const selector = getRevertSelector(caught);
-    const message = caught instanceof Error ? caught.message : "Failed to add liquidity.";
-    throw new Error(selector ? `${message} (revert ${selector})` : message);
+    const hint = decodeMintErrorHint(caught, {
+      helperAddress,
+      poolAddress: params.poolAddress,
+    });
+    if (process.env.NODE_ENV === "development") {
+      // eslint-disable-next-line no-console
+      console.debug("[AddLiquidityModal] mint-error", {
+        hintKind: hint?.kind ?? null,
+        selector:
+          getRevertInfo(caught, { helperAddress, poolAddress: params.poolAddress }).selector ??
+          getRevertSelector(caught),
+      });
+    }
+    throw new MintFlowError(
+      formatContractFailure({
+        baseDecimals: ctx.baseDecimals,
+        baseSymbol: params.pool.baseSymbol ?? CELO_YIELD_POOL.baseToken.symbol,
+        caught,
+        fallback: "Failed to add liquidity.",
+        helperAddress,
+        poolAddress: params.poolAddress,
+        relaxRatioCheck: params.relaxRatioCheck,
+      }),
+      hint
+    );
   }
 
   const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-  assertReceiptSuccess({ context: "Add liquidity", status: receipt.status });
+  try {
+    assertReceiptSuccess({ context: "Add liquidity", status: receipt.status });
+  } catch {
+    throw new Error(
+      `Add liquidity reverted onchain (tx ${txHash}). Turn on "Relax ratio check" in settings and try Auto again.`
+    );
+  }
 
-  const { baseRefund, fyRefund, mintedLp } = decodeTransfers({
+  const { amountsUnavailable, baseRefund, baseUsed, fyRefund, fyUsed, mintedLp } = decodeTransfers({
     baseToken: ctx.baseToken,
     fyToken: ctx.fyToken,
+    helperAddress,
     logs: receipt.logs as unknown as readonly {
       address: Address;
       data: `0x${string}`;
@@ -491,10 +917,8 @@ async function addLiquidityFlow(params: {
     userAddress: ctx.userAddress,
   });
 
-  const baseUsed = baseParsed > baseRefund ? baseParsed - baseRefund : 0n;
-  const fyUsed = fyParsed > fyRefund ? fyParsed - fyRefund : 0n;
-
   return {
+    amountsUnavailable,
     baseRefund,
     baseUsed,
     fyRefund,
@@ -502,6 +926,115 @@ async function addLiquidityFlow(params: {
     mintedLp,
     txHash,
   };
+}
+
+function scaleMintAmounts(params: {
+  baseAmount: string;
+  fyAmount: string;
+  baseDecimals: number | null;
+  fyDecimals: number | null;
+  numerator: bigint;
+  denominator: bigint;
+}) {
+  if (params.baseDecimals === null || params.fyDecimals === null) {
+    return null;
+  }
+  try {
+    const baseRaw = parseUnits(params.baseAmount, params.baseDecimals);
+    const fyRaw = parseUnits(params.fyAmount, params.fyDecimals);
+    const nextBaseRaw = (baseRaw * params.numerator) / params.denominator;
+    const nextFyRaw = (fyRaw * params.numerator) / params.denominator;
+    if (nextBaseRaw <= 0n || nextFyRaw <= 0n) {
+      return null;
+    }
+    return {
+      baseAmount: formatUnits(nextBaseRaw, params.baseDecimals),
+      fyAmount: formatUnits(nextFyRaw, params.fyDecimals),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function retryScaledMintAttempts(params: {
+  baseAmount: string;
+  fyAmount: string;
+  ratioSlippageBps: string;
+  userAddress: Address | undefined;
+  walletClient: WalletClient | null;
+  pool: ReturnType<typeof usePoolReads>;
+  poolAddress: Address;
+}) {
+  const candidates = [
+    { denominator: 2n, label: "50%", numerator: 1n },
+    { denominator: 4n, label: "25%", numerator: 1n },
+    { denominator: 10n, label: "10%", numerator: 1n },
+  ] as const;
+
+  let lastError: unknown = null;
+  for (const candidate of candidates) {
+    const scaled = scaleMintAmounts({
+      baseAmount: params.baseAmount,
+      baseDecimals: params.pool.baseDecimals,
+      denominator: candidate.denominator,
+      fyAmount: params.fyAmount,
+      fyDecimals: params.pool.fyDecimals,
+      numerator: candidate.numerator,
+    });
+    if (!scaled) {
+      continue;
+    }
+
+    try {
+      const retry = await addLiquidityFlow({
+        ...params,
+        baseAmount: scaled.baseAmount,
+        fyAmount: scaled.fyAmount,
+        relaxRatioCheck: true,
+      });
+      return {
+        result: retry,
+        retried: true,
+        retryNote: `Retried with ${candidate.label} size + relaxed ratio bounds.`,
+      };
+    } catch (retryCaught) {
+      lastError = retryCaught;
+    }
+  }
+
+  throw lastError ?? new Error("Retry failed.");
+}
+
+async function addLiquidityFlowWithRetry(params: {
+  baseAmount: string;
+  fyAmount: string;
+  ratioSlippageBps: string;
+  relaxRatioCheck: boolean;
+  userAddress: Address | undefined;
+  walletClient: WalletClient | null;
+  pool: ReturnType<typeof usePoolReads>;
+  poolAddress: Address;
+}) {
+  try {
+    const first = await addLiquidityFlow(params);
+    if (first.mintedLp === 0n && !params.relaxRatioCheck) {
+      const retry = await addLiquidityFlow({ ...params, relaxRatioCheck: true });
+      return { result: retry, retried: true, retryNote: "Retried with relaxed ratio bounds." };
+    }
+    return { result: first, retried: false, retryNote: null };
+  } catch (caught) {
+    const selector =
+      getRevertInfo(caught, { poolAddress: params.poolAddress }).selector ??
+      getRevertSelector(caught);
+    if (selector === "0xd48b6b81" && !params.relaxRatioCheck) {
+      const retry = await addLiquidityFlow({ ...params, relaxRatioCheck: true });
+      return { result: retry, retried: true, retryNote: "Retried with relaxed ratio bounds." };
+    }
+    if (selector === "0x68744619") {
+      return retryScaledMintAttempts(params);
+    }
+    throw caught;
+  }
 }
 
 type AddLiquidityModalProps = {
@@ -614,6 +1147,7 @@ function TokenAmountCard(props: {
 }
 
 function MintOutcomeCard(props: {
+  amountsUnavailable: boolean;
   phase: Phase;
   mintedLp: bigint | null;
   baseUsed: bigint | null;
@@ -635,11 +1169,11 @@ function MintOutcomeCard(props: {
   }
 
   const baseUsedText =
-    props.baseUsed === null || props.baseDecimals === null
+    props.amountsUnavailable || props.baseUsed === null || props.baseDecimals === null
       ? "—"
       : `${formatUnits(props.baseUsed, props.baseDecimals)} ${props.baseSymbol}`;
   const fyUsedText =
-    props.fyUsed === null || props.fyDecimals === null
+    props.amountsUnavailable || props.fyUsed === null || props.fyDecimals === null
       ? "—"
       : `${formatUnits(props.fyUsed, props.fyDecimals)} ${props.fySymbol}`;
 
@@ -687,6 +1221,11 @@ function MintOutcomeCard(props: {
           refund your tokens to your wallet.
         </p>
       ) : null}
+      {props.amountsUnavailable ? (
+        <p className="mt-3 text-numo-muted text-xs">
+          Amounts unavailable (route didn&apos;t pass through helper/pool directly).
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -715,9 +1254,21 @@ function AddLiquidityModalView(props: {
   fyPositionText: string;
   basePositionText: string;
   txHash: `0x${string}` | null;
+  isMatured: boolean;
+  maturityLabel: string | null;
   phase: Phase;
   error: string | null;
   quoteError: string | null;
+  pendingStatusText: string | null;
+  canSyncPool: boolean;
+  syncPoolButtonText: string;
+  onSyncPool: () => void;
+  syncTxHash: `0x${string}` | null;
+  amountsUnavailable: boolean;
+  canApplyRatioFix: boolean;
+  onApplyRatioFix: () => void;
+  canApplyFyLimitFix: boolean;
+  onApplyFyLimitFix: () => void;
   mintedLp: bigint | null;
   baseRefund: bigint | null;
   fyRefund: bigint | null;
@@ -786,8 +1337,17 @@ function AddLiquidityModalView(props: {
                 </span>
               </div>
               <div className="mt-1 flex items-center gap-2 text-sm">
-                <span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
-                <span className="text-emerald-600">In range</span>
+                <span
+                  className={cn(
+                    "h-2.5 w-2.5 rounded-full",
+                    props.isMatured ? "bg-amber-500" : "bg-emerald-500"
+                  )}
+                />
+                <span className={cn(props.isMatured ? "text-amber-700" : "text-emerald-600")}>
+                  {props.isMatured
+                    ? `Matured${props.maturityLabel ? ` (${props.maturityLabel} UTC)` : ""}`
+                    : "In range"}
+                </span>
               </div>
             </div>
           </div>
@@ -829,8 +1389,10 @@ function AddLiquidityModalView(props: {
           </div>
 
           <TxHashLine hash={props.txHash} label="Transaction" />
+          <TxHashLine hash={props.syncTxHash} label="Pool sync tx" />
 
           <MintOutcomeCard
+            amountsUnavailable={props.amountsUnavailable}
             baseDecimals={props.baseDecimals}
             baseRefund={props.baseRefund}
             baseSymbol={CELO_YIELD_POOL.baseToken.symbol}
@@ -847,9 +1409,57 @@ function AddLiquidityModalView(props: {
             <p className="mt-4 text-numo-muted text-sm">{props.quoteError}</p>
           ) : null}
 
+          {props.pendingStatusText ? (
+            <p className="mt-4 text-numo-muted text-sm">{props.pendingStatusText}</p>
+          ) : null}
+
           {props.phase === "error" ? (
             <p className="mt-4 text-red-700 text-sm">{props.error ?? "Transaction failed."}</p>
           ) : null}
+
+          {props.canApplyRatioFix ? (
+            <div className="mt-4">
+              <Button
+                className="w-full justify-center text-sm"
+                onClick={() => void props.onApplyRatioFix()}
+                size="lg"
+                type="button"
+                variant="ghost"
+              >
+                Fix ratio (set base = needed)
+              </Button>
+            </div>
+          ) : null}
+
+          {props.canApplyFyLimitFix ? (
+            <div className="mt-3">
+              <Button
+                className="w-full justify-center text-sm"
+                onClick={() => void props.onApplyFyLimitFix()}
+                size="lg"
+                type="button"
+                variant="ghost"
+              >
+                Fit base to max fy
+              </Button>
+            </div>
+          ) : null}
+
+          <div className="mt-4">
+            <Button
+              className={cn(
+                "w-full justify-center text-sm",
+                props.canSyncPool ? null : "opacity-60"
+              )}
+              disabled={!props.canSyncPool}
+              onClick={() => void props.onSyncPool()}
+              size="lg"
+              type="button"
+              variant="ghost"
+            >
+              {props.syncPoolButtonText}
+            </Button>
+          </div>
 
           <div className="mt-6">
             <Button
@@ -877,6 +1487,7 @@ function AddLiquidityModalView(props: {
   );
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Modal coordinates async wallet, pool, and UI state transitions.
 export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityModalProps) {
   const [mounted, setMounted] = useState(false);
   const userAddress = usePrivyAddress();
@@ -891,6 +1502,11 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
   const [relaxRatioCheck, setRelaxRatioCheck] = useState(false);
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [mintErrorHint, setMintErrorHint] = useState<MintErrorHint>(null);
+  const [fyLimitingAfterFix, setFyLimitingAfterFix] = useState(false);
+  const [isSyncingPool, setIsSyncingPool] = useState(false);
+  const [syncTxHash, setSyncTxHash] = useState<`0x${string}` | null>(null);
+  const [pendingDeltas, setPendingDeltas] = useState<PendingDeltaSnapshot | null>(null);
 
   const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
   const [mintedLp, setMintedLp] = useState<bigint | null>(null);
@@ -898,9 +1514,26 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
   const [fyRefund, setFyRefund] = useState<bigint | null>(null);
   const [baseUsed, setBaseUsed] = useState<bigint | null>(null);
   const [fyUsed, setFyUsed] = useState<bigint | null>(null);
+  const [amountsUnavailable, setAmountsUnavailable] = useState(false);
 
   const poolName = `${CELO_YIELD_POOL.fyToken.symbol} / ${CELO_YIELD_POOL.baseToken.symbol}`;
   const poolAddress = CELO_YIELD_POOL.poolAddress as Address;
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  const isMatured = typeof pool.maturity === "number" && pool.maturity <= nowSeconds;
+  const maturityLabel =
+    typeof pool.maturity === "number" ? formatUtcMaturityLabel(pool.maturity) : null;
+  const hasPendingPoolDeltas =
+    (pendingDeltas?.baseDelta ?? 0n) !== 0n || (pendingDeltas?.fyDelta ?? 0n) !== 0n;
+  const pendingStatusText =
+    pendingDeltas && pool.baseDecimals !== null && pool.fyDecimals !== null
+      ? `Pool pending deltas: ${formatPendingDeltaLabel({
+          baseDecimals: pool.baseDecimals,
+          baseSymbol: pool.baseSymbol ?? CELO_YIELD_POOL.baseToken.symbol,
+          deltas: pendingDeltas,
+          fyDecimals: pool.fyDecimals,
+          fySymbol: pool.fySymbol ?? CELO_YIELD_POOL.fyToken.symbol,
+        })}`
+      : null;
 
   const computeBaseQuote = async () => {
     setQuoteError(null);
@@ -956,19 +1589,40 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
 
     setPhase("idle");
     setError(null);
+    setMintErrorHint(null);
+    setFyLimitingAfterFix(false);
     setQuoteError(null);
     setRelaxRatioCheck(false);
     setTxHash(null);
+    setSyncTxHash(null);
+    setIsSyncingPool(false);
     setMintedLp(null);
     setBaseRefund(null);
     setFyRefund(null);
     setBaseUsed(null);
     setFyUsed(null);
+    setAmountsUnavailable(false);
 
     // Balances can change outside this modal (swaps, mints, faucets, etc).
     // Refetch immediately on open so the "position" rows reflect current onchain state.
     pool.refetch();
-  }, [open, pool.refetch]);
+    void readPendingDeltas({ poolAddress })
+      .then((next) => setPendingDeltas(next))
+      .catch(() => {
+        // Keep stale values if RPC read fails temporarily.
+      });
+  }, [open, pool.refetch, poolAddress]);
+
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    if (isMatured) {
+      setQuoteError(
+        `Pool matured${maturityLabel ? ` on ${maturityLabel} UTC` : ""}. New liquidity cannot be added to this series.`
+      );
+    }
+  }, [isMatured, maturityLabel, open]);
 
   useEffect(() => {
     if (!open) {
@@ -977,10 +1631,15 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
 
     const id = window.setInterval(() => {
       pool.refetch();
+      void readPendingDeltas({ poolAddress })
+        .then((next) => setPendingDeltas(next))
+        .catch(() => {
+          // Keep stale values if RPC read fails temporarily.
+        });
     }, 15_000);
 
     return () => window.clearInterval(id);
-  }, [open, pool]);
+  }, [open, pool, poolAddress]);
 
   if (!(open && mounted)) {
     return null;
@@ -996,7 +1655,22 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
     fyPositive &&
     pool.baseDecimals !== null &&
     pool.fyDecimals !== null &&
+    !hasPendingPoolDeltas &&
+    !isMatured &&
     !isPending;
+  const canSyncPool = !(isPending || isSyncingPool || isMatured) && hasPendingPoolDeltas;
+  const canApplyRatioFix =
+    phase === "error" &&
+    !isPending &&
+    mintErrorHint?.kind === "notEnoughBase" &&
+    pool.baseDecimals !== null;
+  const canApplyFyLimitFix =
+    !isPending &&
+    fyLimitingAfterFix &&
+    pool.baseDecimals !== null &&
+    pool.fyDecimals !== null &&
+    typeof pool.userFyBal === "bigint";
+  const syncPoolButtonText = isSyncingPool ? "Syncing pool…" : "Recover / Sync pool";
 
   const close = () => {
     if (isPending) {
@@ -1007,10 +1681,143 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
 
   const autoBase = () => void computeBaseQuote();
 
+  const applyFyLimitFix = () => {
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Keeps user-facing fix flow atomic and state-safe.
+    const run = async () => {
+      if (
+        pool.baseDecimals === null ||
+        pool.fyDecimals === null ||
+        typeof pool.userFyBal !== "bigint"
+      ) {
+        return;
+      }
+      const userFyBal = pool.userFyBal;
+      try {
+        const ratioWad = await readPoolRatioWad({ poolAddress });
+        if (ratioWad === null || ratioWad <= 0n) {
+          setQuoteError("Pool ratio unavailable.");
+          return;
+        }
+        const baseRaw = (userFyBal * ratioWad) / 10n ** 18n;
+        const safeBaseRaw = baseRaw > 1n ? baseRaw - 1n : baseRaw;
+        setBaseAmount(formatUnits(safeBaseRaw, pool.baseDecimals));
+        setFyAmount(formatUnits(userFyBal, pool.fyDecimals));
+        setFyLimitingAfterFix(false);
+        setError(null);
+        setMintErrorHint(null);
+        setPhase("idle");
+        setQuoteError("FY balance is limiting. Base was fitted to max FY at current pool ratio.");
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Failed to fit base to FY.");
+      }
+    };
+
+    void run();
+  };
+
+  const applyRatioFix = () => {
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Fresh reads + fallback handling are intentionally in one guarded flow.
+    const run = async () => {
+      if (
+        mintErrorHint?.kind !== "notEnoughBase" ||
+        pool.baseDecimals === null ||
+        pool.fyDecimals === null
+      ) {
+        return;
+      }
+
+      try {
+        const pending = await readPendingDeltas({ poolAddress });
+        if (pending.baseDelta !== 0n || pending.fyDelta !== 0n) {
+          setError("Pool has pending balances. Click Recover / Sync pool, then retry.");
+          return;
+        }
+
+        const ratioWad = await readPoolRatioWad({ poolAddress });
+        if (ratioWad === null || ratioWad <= 0n) {
+          setQuoteError("Pool ratio unavailable.");
+          return;
+        }
+
+        const ratioBuffer = mintErrorHint.baseNeeded / 10_000n;
+        const buffer = ratioBuffer > 1n ? ratioBuffer : 1n;
+        const targetBase = mintErrorHint.baseNeeded + buffer;
+        const targetFy = (targetBase * 10n ** 18n) / ratioWad;
+        setBaseAmount(formatUnits(targetBase, pool.baseDecimals));
+
+        if (typeof pool.userFyBal === "bigint" && targetFy > pool.userFyBal) {
+          const userFyBal = pool.userFyBal;
+          setFyAmount(formatUnits(userFyBal, pool.fyDecimals));
+          setFyLimitingAfterFix(true);
+          setQuoteError(
+            `FY is now limiting. Needed ${formatTokenAmount(targetFy, pool.fyDecimals)} ${pool.fySymbol ?? CELO_YIELD_POOL.fyToken.symbol}, available ${formatTokenAmount(userFyBal, pool.fyDecimals)}. Click "Fit base to max fy".`
+          );
+        } else {
+          setFyAmount(formatUnits(targetFy, pool.fyDecimals));
+          setFyLimitingAfterFix(false);
+          setQuoteError("Adjusted to fresh pool ratio with base set to needed + 0.01% buffer.");
+        }
+
+        setError(null);
+        setMintErrorHint(null);
+        setPhase("idle");
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "Failed to apply ratio fix.");
+      }
+    };
+
+    void run();
+  };
+
+  const syncPool = () => {
+    const run = async () => {
+      setIsSyncingPool(true);
+      setError(null);
+      setMintErrorHint(null);
+      setFyLimitingAfterFix(false);
+      setQuoteError(null);
+      setSyncTxHash(null);
+      try {
+        const synced = await recoverOrSyncPool({
+          baseDecimals: pool.baseDecimals,
+          baseSymbol: pool.baseSymbol ?? CELO_YIELD_POOL.baseToken.symbol,
+          fyDecimals: pool.fyDecimals,
+          fySymbol: pool.fySymbol ?? CELO_YIELD_POOL.fyToken.symbol,
+          poolAddress,
+          userAddress,
+          walletClient: walletClient as WalletClient | null,
+        });
+        if (synced.txHash) {
+          setSyncTxHash(synced.txHash);
+          setQuoteError(synced.summary);
+        } else {
+          setQuoteError(synced.summary);
+        }
+        try {
+          const next = await readPendingDeltas({ poolAddress });
+          setPendingDeltas(next);
+        } catch {
+          // Keep stale values if RPC read fails temporarily.
+        }
+        pool.refetch();
+      } catch (caught) {
+        setPhase("error");
+        setError(caught instanceof Error ? caught.message : "Pool sync failed.");
+      } finally {
+        setIsSyncingPool(false);
+      }
+    };
+
+    void run();
+  };
+
   const submit = () => {
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Submit flow intentionally keeps guardrails in one place.
     const run = async () => {
       setPhase("pending");
       setError(null);
+      setMintErrorHint(null);
+      setFyLimitingAfterFix(false);
       setQuoteError(null);
       setTxHash(null);
       setMintedLp(null);
@@ -1018,9 +1825,21 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
       setFyRefund(null);
       setBaseUsed(null);
       setFyUsed(null);
+      setAmountsUnavailable(false);
+
+      if (isMatured) {
+        setPhase("error");
+        setError("This pool has matured. New liquidity cannot be added to this series.");
+        return;
+      }
+      if (hasPendingPoolDeltas) {
+        setPhase("error");
+        setError("Pool has pending balances. Click Recover / Sync pool, then retry.");
+        return;
+      }
 
       try {
-        const result = await addLiquidityFlow({
+        const { result, retried, retryNote } = await addLiquidityFlowWithRetry({
           baseAmount,
           fyAmount,
           pool,
@@ -1031,17 +1850,56 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
           walletClient: walletClient as WalletClient | null,
         });
 
+        if (retried) {
+          setRelaxRatioCheck(true);
+          setQuoteError(retryNote ?? "Retried automatically.");
+        }
+
         setTxHash(result.txHash);
         setMintedLp(result.mintedLp);
         setBaseRefund(result.baseRefund);
         setFyRefund(result.fyRefund);
         setBaseUsed(result.baseUsed);
         setFyUsed(result.fyUsed);
+        setAmountsUnavailable(result.amountsUnavailable);
 
         pool.refetch();
+        void readPendingDeltas({ poolAddress })
+          .then((next) => setPendingDeltas(next))
+          .catch(() => {
+            // Keep stale values if RPC read fails temporarily.
+          });
         setPhase("done");
       } catch (caught) {
         setPhase("error");
+        if (caught instanceof MintFlowError) {
+          setMintErrorHint(caught.hint);
+          setError(caught.message);
+          return;
+        }
+        const helperAddress = readCachedHelperAddress();
+        const hint = decodeMintErrorHint(caught, {
+          helperAddress,
+          poolAddress,
+        });
+        setMintErrorHint(hint);
+        const selector =
+          getRevertInfo(caught, { helperAddress, poolAddress }).selector ??
+          getRevertSelector(caught);
+        if (hint || selector) {
+          setError(
+            formatContractFailure({
+              baseDecimals: pool.baseDecimals ?? undefined,
+              baseSymbol: pool.baseSymbol ?? CELO_YIELD_POOL.baseToken.symbol,
+              caught,
+              fallback: "Failed to add liquidity.",
+              helperAddress,
+              poolAddress,
+              relaxRatioCheck,
+            })
+          );
+          return;
+        }
         setError(caught instanceof Error ? caught.message : "Failed to add liquidity.");
       }
     };
@@ -1051,6 +1909,7 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
 
   const modal = (
     <AddLiquidityModalView
+      amountsUnavailable={amountsUnavailable}
       baseAmount={baseAmount}
       baseBalanceText={formatToken(pool.userBaseBal ?? null, pool.baseDecimals, pool.baseSymbol)}
       baseDecimals={pool.baseDecimals}
@@ -1058,7 +1917,10 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
       baseRefund={baseRefund}
       baseUsed={baseUsed}
       buttonText={buttonText}
+      canApplyFyLimitFix={canApplyFyLimitFix}
+      canApplyRatioFix={canApplyRatioFix}
       canSubmit={canSubmit}
+      canSyncPool={canSyncPool}
       close={close}
       error={error}
       feeText={feeText}
@@ -1068,14 +1930,20 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
       fyPositionText={formatToken(pool.userFyBal ?? null, pool.fyDecimals, pool.fySymbol)}
       fyRefund={fyRefund}
       fyUsed={fyUsed}
+      isMatured={isMatured}
       isPending={isPending}
+      maturityLabel={maturityLabel}
       mintedLp={mintedLp}
+      onApplyFyLimitFix={applyFyLimitFix}
+      onApplyRatioFix={applyRatioFix}
       onAutoBase={autoBase}
       onChangeBaseAmount={setBaseAmount}
       onChangeFyAmount={setFyAmount}
       onChangeRatioSlippageBps={setRatioSlippageBps}
       onChangeRelaxRatioCheck={setRelaxRatioCheck}
+      onSyncPool={syncPool}
       onToggleSettings={() => setShowSettings((value) => !value)}
+      pendingStatusText={pendingStatusText}
       phase={phase}
       poolName={poolName}
       quoteError={quoteError}
@@ -1083,6 +1951,8 @@ export function AddLiquidityModal({ open, onOpenChange, feeText }: AddLiquidityM
       relaxRatioCheck={relaxRatioCheck}
       showSettings={showSettings}
       submit={submit}
+      syncPoolButtonText={syncPoolButtonText}
+      syncTxHash={syncTxHash}
       txHash={txHash}
     />
   );

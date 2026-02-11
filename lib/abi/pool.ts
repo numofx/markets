@@ -1,6 +1,10 @@
 import { parseAbi } from "viem";
 
 export const poolAbi = parseAbi([
+  "error NotEnoughBaseIn(uint256 baseAvailable, uint256 baseNeeded)",
+  "error NotEnoughFYTokenIn(uint256 fYTokensAvailable, uint256 fYTokensNeeded)",
+  "error SlippageDuringMint(uint256 newRatio, uint256 minRatio, uint256 maxRatio)",
+  "event Liquidity(uint32 maturity, address indexed from, address indexed to, address indexed fyTokenTo, int256 base, int256 fyTokens, int256 poolTokens)",
   "function baseToken() view returns (address)",
   "function fyToken() view returns (address)",
   "function baseDecimals() view returns (uint256)",
@@ -12,6 +16,8 @@ export const poolAbi = parseAbi([
   "function mint(address to, address remainder, uint256 minRatio, uint256 maxRatio) returns (uint256 baseIn, uint256 fyTokenIn, uint256 minted)",
   "function getBaseBalance() view returns (uint128)",
   "function getFYTokenBalance() view returns (uint128)",
+  "function retrieveBase(address to) returns (uint128)",
+  "function retrieveFYToken(address to) returns (uint128)",
   "function sellBase(address to, uint128 min) returns (uint128)",
   "function sellBasePreview(uint128) view returns (uint128)",
   "function sellFYToken(address to, uint128 min) returns (uint128)",
