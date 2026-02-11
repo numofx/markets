@@ -275,11 +275,11 @@ function useLendMaturityOptions(token: TokenOption["id"]): MaturityOption[] {
 function accentClasses(accent: MaturityOption["accent"]) {
   switch (accent) {
     case "teal":
-      return "text-teal-500 bg-teal-500/10";
+      return "bg-gray-100 text-black";
     case "violet":
-      return "text-fuchsia-500 bg-fuchsia-500/10";
+      return "bg-gray-100 text-black";
     case "lime":
-      return "text-emerald-700 bg-emerald-700/10";
+      return "bg-gray-100 text-black";
   }
 }
 
@@ -680,7 +680,7 @@ function computeRedeemableAtMaturity(params: {
 
 function TokenIcon({ tokenId }: { tokenId: TokenOption["id"] }) {
   return (
-    <span className="inline-flex rounded-full bg-gradient-to-r from-fuchsia-500 via-cyan-400 to-lime-300 p-0.5">
+    <span className="inline-flex rounded-full bg-gray-200 p-0.5">
       <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-sm">
         <Image alt={`${tokenId} token icon`} height={20} src={TOKEN_ICON_SRC[tokenId]} width={20} />
       </span>
@@ -715,18 +715,13 @@ function LendFormView(props: {
       <div className="relative mx-auto w-full max-w-md">
         <div
           aria-hidden="true"
-          className={cn(
-            "-inset-10 absolute rounded-3xl opacity-70 blur-3xl",
-            "bg-gradient-to-b from-numo-cream via-amber-50 to-numo-sand"
-          )}
+          className={cn("-inset-10 absolute rounded-3xl opacity-70 blur-3xl", "bg-neutral-200/60")}
         />
 
         <div className="relative rounded-3xl border border-numo-border bg-white/92 p-8 shadow-xl backdrop-blur">
           <header>
-            <h2 className="bg-gradient-to-r from-teal-500 via-cyan-500 to-fuchsia-500 bg-clip-text font-semibold text-3xl text-transparent tracking-wide">
-              LEND
-            </h2>
-            <p className="mt-2 text-numo-muted text-sm">Lend stablecoins for predictable returns</p>
+            <h2 className="font-semibold text-3xl text-black">Lend</h2>
+            <p className="mt-1 text-gray-500 text-sm">Lend stablecoins for predictable returns</p>
           </header>
 
           <div className="mt-8 flex items-center gap-3">
@@ -736,8 +731,8 @@ function LendFormView(props: {
               </label>
               <input
                 className={cn(
-                  "h-12 w-full rounded-2xl border border-numo-border bg-white px-4 pr-14 text-numo-ink shadow-sm outline-none",
-                  "placeholder:text-numo-border focus:border-numo-ink"
+                  "h-12 w-full rounded-2xl border border-gray-200 bg-white px-4 pr-14 text-black shadow-sm outline-none",
+                  "placeholder:text-gray-400 focus:border-black focus:ring-1 focus:ring-black"
                 )}
                 id="lend-amount"
                 inputMode="decimal"
@@ -746,7 +741,7 @@ function LendFormView(props: {
                 value={props.amount}
               />
               <button
-                className="-translate-y-1/2 absolute top-1/2 right-3 rounded-full px-2 py-1 font-semibold text-numo-muted text-xs transition hover:bg-numo-pill/60"
+                className="-translate-y-1/2 absolute top-1/2 right-3 rounded-full bg-gray-100 px-2 py-1 font-semibold text-black text-xs transition hover:bg-gray-200"
                 onClick={() => props.onAmountChange("0")}
                 type="button"
               >
@@ -759,7 +754,7 @@ function LendFormView(props: {
                 aria-expanded={tokenMenuOpen}
                 aria-haspopup="menu"
                 className={cn(
-                  "flex h-12 w-44 items-center justify-between gap-3 rounded-2xl border border-numo-border bg-white px-3 text-numo-ink shadow-sm",
+                  "flex h-12 w-44 items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-white px-3 text-black shadow-sm",
                   "transition hover:bg-numo-pill/50"
                 )}
                 onClick={() => setTokenMenuOpen((value) => !value)}
@@ -803,7 +798,7 @@ function LendFormView(props: {
                             {option.label}
                           </span>
                         </span>
-                        {isSelected ? <Check className="h-5 w-5 text-emerald-700" /> : null}
+                        {isSelected ? <Check className="h-5 w-5 text-black" /> : null}
                       </button>
                     );
                   })}
@@ -813,13 +808,13 @@ function LendFormView(props: {
           </div>
 
           <div className="mt-10">
-            <div className="text-numo-muted text-xs">
+            <div className="text-gray-500 text-xs">
               Select a {props.selectedToken.label}-based maturity date
             </div>
 
             <div className="mt-4 grid grid-cols-2 gap-4">
               {props.maturityOptions.length === 0 ? (
-                <div className="col-span-2 rounded-2xl border border-numo-border bg-white px-4 py-4 text-numo-muted text-sm shadow-sm">
+                <div className="col-span-2 rounded-2xl border border-numo-border bg-white px-4 py-4 text-gray-500 text-sm shadow-sm">
                   No maturity dates available for {props.selectedToken.label} yet.
                 </div>
               ) : null}
@@ -833,7 +828,7 @@ function LendFormView(props: {
                     className={cn(
                       "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
                       props.maturityOptions.length === 1 ? "col-span-2" : "col-span-1",
-                      isSelected ? "ring-2 ring-numo-ink/10" : "",
+                      isSelected ? "border-black ring-1 ring-black/10" : "",
                       isDisabled ? "opacity-60" : "hover:bg-numo-pill/60"
                     )}
                     disabled={isDisabled}
@@ -850,10 +845,10 @@ function LendFormView(props: {
                       <Waves className="h-5 w-5" />
                     </span>
                     <div className="min-w-0">
-                      <div className="font-semibold text-numo-ink text-sm">
-                        {option.aprText} <span className="font-medium text-numo-muted">APY</span>
+                      <div className="font-semibold text-black text-sm">
+                        {option.aprText} <span className="font-medium text-gray-600">APR</span>
                       </div>
-                      <div className="mt-1 text-numo-muted text-xs">
+                      <div className="mt-1 text-gray-500 text-xs">
                         {option.dateLabel}
                         {option.disabledReason ? ` · ${option.disabledReason}` : ""}
                       </div>
@@ -866,9 +861,10 @@ function LendFormView(props: {
 
           <button
             className={cn(
-              "mt-10 h-12 w-full rounded-2xl border border-numo-border bg-white font-semibold text-numo-muted text-sm",
-              "shadow-sm transition",
-              props.canContinue ? "text-numo-ink hover:bg-numo-pill/60" : "opacity-60"
+              "mt-10 h-12 w-full rounded-2xl border font-semibold text-sm shadow-sm transition",
+              props.canContinue
+                ? "border-black bg-black text-white hover:bg-neutral-800"
+                : "border-gray-200 bg-gray-200 text-gray-500"
             )}
             disabled={!props.canContinue}
             onClick={props.onNextStep}
@@ -898,10 +894,7 @@ function LendReviewTransaction(props: {
       <div className="relative mx-auto w-full max-w-md">
         <div
           aria-hidden="true"
-          className={cn(
-            "-inset-10 absolute rounded-3xl opacity-80 blur-3xl",
-            "bg-gradient-to-br from-emerald-200 via-sky-200 to-rose-200"
-          )}
+          className={cn("-inset-10 absolute rounded-3xl opacity-80 blur-3xl", "bg-neutral-200/60")}
         />
 
         <div className="relative rounded-3xl border border-numo-border bg-white/92 p-8 shadow-xl backdrop-blur">
@@ -954,7 +947,7 @@ function LendReviewTransaction(props: {
                 %
               </span>
               <div>
-                <div className="text-numo-muted text-xs">Effective APY</div>
+                <div className="text-numo-muted text-xs">Effective APR</div>
                 <div className="mt-1 font-semibold text-lg text-numo-ink">
                   {props.yieldLabel || "—"}
                 </div>
@@ -964,10 +957,10 @@ function LendReviewTransaction(props: {
 
           <button
             className={cn(
-              "mt-10 h-12 w-full rounded-2xl border border-numo-border font-semibold text-sm shadow-sm transition",
+              "mt-10 h-12 w-full rounded-2xl border font-semibold text-sm shadow-sm transition",
               props.canContinue
-                ? "bg-gradient-to-r from-amber-400 via-fuchsia-500 to-emerald-400 text-white hover:opacity-95"
-                : "bg-white text-numo-muted opacity-60"
+                ? "border-black bg-black text-white hover:bg-neutral-800"
+                : "border-gray-200 bg-gray-200 text-gray-500"
             )}
             disabled={!props.canContinue}
             onClick={props.onConfirm}
@@ -1039,12 +1032,12 @@ function LendTransactionConfirmation(props: {
 
   const buttonClass = (() => {
     if (isPending) {
-      return "bg-gradient-to-r from-amber-200 via-fuchsia-200 to-emerald-200 text-white opacity-60";
+      return "border-gray-200 bg-gray-200 text-gray-500";
     }
     if (props.phase === "done") {
-      return "bg-gradient-to-r from-amber-400 via-fuchsia-500 to-emerald-400 text-white hover:opacity-95";
+      return "border-black bg-black text-white hover:bg-neutral-800";
     }
-    return "bg-white text-numo-muted opacity-60";
+    return "border-gray-200 bg-gray-200 text-gray-500";
   })();
 
   return (
@@ -1052,10 +1045,7 @@ function LendTransactionConfirmation(props: {
       <div className="relative mx-auto w-full max-w-md">
         <div
           aria-hidden="true"
-          className={cn(
-            "-inset-10 absolute rounded-3xl opacity-80 blur-3xl",
-            "bg-gradient-to-br from-emerald-200 via-sky-200 to-rose-200"
-          )}
+          className={cn("-inset-10 absolute rounded-3xl opacity-80 blur-3xl", "bg-neutral-200/60")}
         />
 
         <div className="relative rounded-3xl border border-numo-border bg-white/92 p-8 shadow-xl backdrop-blur">

@@ -267,11 +267,11 @@ function useBorrowMaturityOptions(): MaturityOption[] {
 function accentClasses(accent: MaturityOption["accent"]) {
   switch (accent) {
     case "teal":
-      return "text-teal-500 bg-teal-500/10";
+      return "bg-gray-100 text-black";
     case "violet":
-      return "text-fuchsia-500 bg-fuchsia-500/10";
+      return "bg-gray-100 text-black";
     case "lime":
-      return "text-emerald-700 bg-white";
+      return "bg-gray-100 text-black";
   }
 }
 
@@ -327,7 +327,7 @@ function getBorrowValidationError(params: {
 
 function TokenIcon({ tokenId }: { tokenId: TokenOption["id"] }) {
   return (
-    <span className="inline-flex rounded-full bg-gradient-to-r from-fuchsia-500 via-cyan-400 to-lime-300 p-0.5">
+    <span className="inline-flex rounded-full bg-gray-200 p-0.5">
       <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-sm">
         <Image alt={`${tokenId} token icon`} height={20} src={TOKEN_ICON_SRC[tokenId]} width={20} />
       </span>
@@ -337,7 +337,7 @@ function TokenIcon({ tokenId }: { tokenId: TokenOption["id"] }) {
 
 function CollateralIcon({ collateralId }: { collateralId: CollateralOption["id"] }) {
   return (
-    <span className="inline-flex rounded-full bg-gradient-to-r from-fuchsia-500 via-cyan-400 to-lime-300 p-0.5">
+    <span className="inline-flex rounded-full bg-gray-200 p-0.5">
       <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-sm">
         <Image
           alt={`${collateralId} token icon`}
@@ -563,9 +563,7 @@ function MaturityGrid({
       : option.dateLabel;
 
     if (wideLayout) {
-      const backgroundClass = isSelected
-        ? "bg-gradient-to-r from-lime-200 via-emerald-200 to-emerald-500/70"
-        : "bg-white";
+      const backgroundClass = isSelected ? "border-black bg-neutral-50" : "bg-white";
       const interactionClass = isDisabled ? "opacity-60" : "hover:bg-numo-pill/60";
       return (
         <button
@@ -578,14 +576,14 @@ function MaturityGrid({
           onClick={() => onSelectMaturity(option.id)}
           type="button"
         >
-          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-sm">
-            <Waves className="h-6 w-6 text-emerald-700" />
+          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 shadow-sm">
+            <Waves className="h-6 w-6 text-black" />
           </span>
           <div className="min-w-0">
-            <div className="font-semibold text-base text-numo-ink">
-              {option.aprText} <span className="font-medium text-numo-ink/70">APR</span>
+            <div className="font-semibold text-base text-black">
+              {option.aprText} <span className="font-medium text-gray-600">APR</span>
             </div>
-            <div className="mt-1 text-numo-ink/70 text-sm">{dateLine}</div>
+            <div className="mt-1 text-gray-500 text-sm">{dateLine}</div>
           </div>
         </button>
       );
@@ -595,7 +593,7 @@ function MaturityGrid({
       <button
         className={cn(
           "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
-          isSelected ? "ring-2 ring-numo-ink/10" : "",
+          isSelected ? "border-black ring-1 ring-black/10" : "",
           isDisabled ? "opacity-60" : "hover:bg-numo-pill/60"
         )}
         disabled={isDisabled}
@@ -611,10 +609,10 @@ function MaturityGrid({
           <Waves className="h-5 w-5" />
         </span>
         <div className="min-w-0">
-          <div className="font-semibold text-numo-ink text-sm">
-            {option.aprText} <span className="font-medium text-numo-muted">APR</span>
+          <div className="font-semibold text-black text-sm">
+            {option.aprText} <span className="font-medium text-gray-600">APR</span>
           </div>
-          <div className="mt-1 text-numo-muted text-xs">{dateLine}</div>
+          <div className="mt-1 text-gray-500 text-xs">{dateLine}</div>
         </div>
       </button>
     );
@@ -622,7 +620,7 @@ function MaturityGrid({
 
   return (
     <div className="mt-10">
-      <div className="text-numo-muted text-xs">Available {tokenLabel}-based maturity dates</div>
+      <div className="text-gray-500 text-xs">Available {tokenLabel}-based maturity dates</div>
 
       <div className="mt-4 grid grid-cols-2 gap-4">
         {left ? renderOption(left, false) : <div />}
@@ -661,15 +659,15 @@ function CollateralCard({
     <div className="mt-4 rounded-2xl border border-numo-border bg-white px-4 py-3 shadow-sm">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
-          <div className="text-numo-muted text-xs">Collateral</div>
+          <div className="text-gray-500 text-xs">Collateral</div>
           <input
-            className="mt-2 w-full bg-transparent text-lg text-numo-ink outline-none placeholder:text-numo-border"
+            className="mt-2 w-full bg-transparent text-black text-lg outline-none placeholder:text-gray-400"
             inputMode="decimal"
             onChange={(event) => onCollateralChange(event.target.value)}
             placeholder="0"
             value={collateralInput}
           />
-          <div className="mt-1 text-numo-muted text-xs">
+          <div className="mt-1 text-gray-500 text-xs">
             Balance: {usdtBalance === null ? "—" : `${formatUnits(usdtBalance, usdtDecimals)} USDT`}
           </div>
         </div>
@@ -679,7 +677,7 @@ function CollateralCard({
               aria-expanded={collateralMenuOpen}
               aria-haspopup="menu"
               className={cn(
-                "flex h-12 w-40 items-center justify-between gap-2 rounded-full border border-numo-border bg-white px-3 text-numo-ink shadow-sm",
+                "flex h-12 w-40 items-center justify-between gap-2 rounded-full border border-gray-200 bg-white px-3 text-black shadow-sm",
                 "transition hover:bg-numo-pill/50"
               )}
               onClick={onToggleCollateralMenu}
@@ -718,7 +716,7 @@ function CollateralCard({
                         <span className="text-numo-muted text-sm">{option.subtitle}</span>
                       </span>
                     </span>
-                    <Check className="h-5 w-5 text-emerald-700" />
+                    <Check className="h-5 w-5 text-black" />
                   </button>
                 ))}
               </div>
@@ -726,7 +724,7 @@ function CollateralCard({
           </div>
 
           <button
-            className="rounded-full bg-numo-pill px-3 py-2 font-semibold text-numo-ink text-xs transition hover:opacity-90 disabled:opacity-50"
+            className="rounded-full bg-gray-100 px-3 py-2 font-semibold text-black text-xs transition hover:bg-gray-200 disabled:opacity-50"
             disabled={usdtBalance === null}
             onClick={onMax}
             type="button"
@@ -785,9 +783,10 @@ function SubmitSection({
     <>
       <button
         className={cn(
-          "mt-10 h-12 w-full rounded-2xl border border-numo-border bg-white font-semibold text-numo-muted text-sm",
-          "shadow-sm transition",
-          canContinue ? "text-numo-ink hover:bg-numo-pill/60" : "opacity-60"
+          "mt-10 h-12 w-full rounded-2xl border font-semibold text-sm shadow-sm transition",
+          canContinue
+            ? "border-black bg-black text-white hover:bg-neutral-800"
+            : "border-gray-200 bg-gray-200 text-gray-500"
         )}
         disabled={!canContinue || isSubmitting}
         onClick={onSubmit}
@@ -798,7 +797,7 @@ function SubmitSection({
 
       {secondaryAction ? (
         <button
-          className="mt-2 h-10 w-full rounded-2xl border border-numo-border bg-white font-semibold text-numo-muted text-sm transition hover:bg-numo-pill/40"
+          className="mt-2 h-10 w-full rounded-2xl border border-gray-200 bg-white font-semibold text-black text-sm transition hover:bg-gray-50"
           disabled={isSubmitting}
           onClick={secondaryAction.onClick}
           type="button"
@@ -847,8 +846,8 @@ function BorrowAmountRow({
         </label>
         <input
           className={cn(
-            "h-12 w-full rounded-2xl border border-numo-border bg-white px-4 text-numo-ink shadow-sm outline-none",
-            "placeholder:text-numo-border focus:border-numo-ink"
+            "h-12 w-full rounded-2xl border border-gray-200 bg-white px-4 text-black shadow-sm outline-none",
+            "placeholder:text-gray-400 focus:border-black focus:ring-1 focus:ring-black"
           )}
           id="borrow-amount"
           inputMode="decimal"
@@ -890,7 +889,7 @@ function BorrowAmountRow({
                       <span className="text-numo-muted text-sm">{option.subtitle}</span>
                     </span>
                   </span>
-                  {isSelected ? <Check className="h-5 w-5 text-emerald-700" /> : null}
+                  {isSelected ? <Check className="h-5 w-5 text-black" /> : null}
                 </button>
               );
             })}
@@ -1161,10 +1160,8 @@ function BorrowStepView(params: {
   return (
     <>
       <header>
-        <h2 className="bg-gradient-to-r from-teal-500 via-cyan-500 to-fuchsia-500 bg-clip-text font-semibold text-3xl text-transparent tracking-wide">
-          BORROW
-        </h2>
-        <p className="mt-2 text-numo-muted text-sm">Borrow stablecoins at a fixed rate</p>
+        <h2 className="font-semibold text-3xl text-black">Borrow</h2>
+        <p className="mt-1 text-gray-500 text-sm">Borrow stablecoins at a fixed rate</p>
       </header>
 
       <BorrowAmountRow
@@ -1475,10 +1472,7 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
       <div className="relative mx-auto w-full max-w-md">
         <div
           aria-hidden="true"
-          className={cn(
-            "-inset-10 absolute rounded-3xl opacity-70 blur-3xl",
-            "bg-gradient-to-b from-numo-cream via-amber-50 to-emerald-200/70"
-          )}
+          className={cn("-inset-10 absolute rounded-3xl opacity-70 blur-3xl", "bg-neutral-200/60")}
         />
 
         <div className="relative rounded-3xl border border-numo-border bg-white/92 p-8 shadow-xl backdrop-blur">
