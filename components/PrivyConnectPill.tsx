@@ -1,7 +1,7 @@
 "use client";
 
 import { useConnectWallet, useLoginWithEmail, usePrivy } from "@privy-io/react-auth";
-import { Copy, LogOut, Settings, Wallet } from "lucide-react";
+import { ChevronDown, Copy, LogOut, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
@@ -98,8 +98,6 @@ type ConnectedWalletPanelProps = {
   busy: boolean;
   disconnectDisabledReason: string | null;
   disconnectNote: string | null;
-  canLoginOrLink: boolean;
-  onLoginOrLink: () => Promise<void>;
   onCopyAddress: () => Promise<void>;
   onChangeWallet: () => void;
   onDisconnectWallet: () => Promise<void>;
@@ -109,19 +107,21 @@ function MenuItem(props: {
   icon: ReactNode;
   label: string;
   disabled?: boolean;
+  tone?: "default" | "danger";
   onClick: () => Promise<void>;
 }) {
+  const isDanger = props.tone === "danger";
   return (
     <button
-      className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left text-white/90 transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
+      className="flex w-full items-center gap-2 rounded-xl px-4 py-3 text-left font-normal text-[13px] transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
       disabled={props.disabled}
       onClick={() => void props.onClick()}
       type="button"
     >
-      <span className="grid h-9 w-9 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10">
+      <span className="grid h-7 w-7 place-items-center rounded-lg border border-white/10 bg-white/5">
         {props.icon}
       </span>
-      <span className="font-medium text-sm">{props.label}</span>
+      <span className={isDanger ? "text-red-400/70" : "text-white/90"}>{props.label}</span>
     </button>
   );
 }
@@ -183,27 +183,16 @@ function ConnectedWalletPanel({
   busy,
   disconnectDisabledReason,
   disconnectNote,
-  canLoginOrLink,
-  onLoginOrLink,
   onCopyAddress,
   onChangeWallet,
   onDisconnectWallet,
 }: ConnectedWalletPanelProps) {
   const disconnectDisabled = Boolean(disconnectDisabledReason);
+  const shortAddr = `${addr.slice(0, 6)}...${addr.slice(-4)}`;
   return (
     <div>
-      <div className="px-3 pb-2 text-white/70 text-xs">Wallet connected</div>
-      <div className="break-all px-3 pb-3 font-semibold text-sm text-white">{addr}</div>
-      <div className="h-px bg-white/10" />
-      <div className="py-2">
-        {canLoginOrLink ? (
-          <MenuItem
-            disabled={busy}
-            icon={<Settings className="h-4 w-4 text-white/70" />}
-            label="Continue"
-            onClick={onLoginOrLink}
-          />
-        ) : null}
+      <div className="px-4 pb-1 font-semibold text-[14px] text-white">{shortAddr}</div>
+      <div className="py-1">
         <MenuItem
           disabled={busy}
           icon={<Copy className="h-4 w-4 text-white/70" />}
@@ -221,12 +210,13 @@ function ConnectedWalletPanel({
           icon={<LogOut className="h-4 w-4 text-white/70" />}
           label="Disconnect"
           onClick={onDisconnectWallet}
+          tone="danger"
         />
         {disconnectDisabledReason ? (
-          <div className="px-3 pt-2 text-white/50 text-xs">{disconnectDisabledReason}</div>
+          <div className="px-4 pt-2 text-white/50 text-xs">{disconnectDisabledReason}</div>
         ) : null}
         {disconnectNote ? (
-          <div className="px-3 pt-2 text-white/50 text-xs">{disconnectNote}</div>
+          <div className="px-4 pt-2 text-white/50 text-xs">{disconnectNote}</div>
         ) : null}
       </div>
     </div>
@@ -260,12 +250,11 @@ function SignedInPanel({
   onDisconnectWallet,
 }: SignedInPanelProps) {
   const disconnectDisabled = Boolean(disconnectDisabledReason);
+  const shortAddr = addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "—";
   return (
     <div>
-      <div className="px-3 pb-2 text-white/70 text-xs">Wallet</div>
-      <div className="break-all px-3 pb-3 font-semibold text-sm text-white">{addr ?? "—"}</div>
-      <div className="h-px bg-white/10" />
-      <div className="py-2">
+      <div className="px-4 pb-1 font-semibold text-[14px] text-white">{shortAddr}</div>
+      <div className="py-1">
         <MenuItem
           disabled={busy}
           icon={<Copy className="h-4 w-4 text-white/70" />}
@@ -283,12 +272,13 @@ function SignedInPanel({
           icon={<LogOut className="h-4 w-4 text-white/70" />}
           label="Disconnect"
           onClick={onDisconnectWallet}
+          tone="danger"
         />
         {disconnectDisabledReason ? (
-          <div className="px-3 pt-2 text-white/50 text-xs">{disconnectDisabledReason}</div>
+          <div className="px-4 pt-2 text-white/50 text-xs">{disconnectDisabledReason}</div>
         ) : null}
         {disconnectNote ? (
-          <div className="px-3 pt-2 text-white/50 text-xs">{disconnectNote}</div>
+          <div className="px-4 pt-2 text-white/50 text-xs">{disconnectNote}</div>
         ) : null}
       </div>
     </div>
@@ -299,7 +289,6 @@ function ConnectPopoverContent(props: {
   addr: string | null;
   authenticated: boolean;
   busy: boolean;
-  canLoginOrLink: boolean;
   code: string;
   codeSent: boolean;
   disconnectDisabledReason: string | null;
@@ -309,7 +298,6 @@ function ConnectPopoverContent(props: {
   onChangeWallet: () => void;
   onConnectWallet: () => void;
   onDisconnectWallet: () => Promise<void>;
-  onLoginOrLink: () => Promise<void>;
   onSendCode: () => Promise<void>;
   onVerifyCode: () => Promise<void>;
   setCode: (value: string) => void;
@@ -334,13 +322,11 @@ function ConnectPopoverContent(props: {
       <ConnectedWalletPanel
         addr={props.addr}
         busy={props.busy}
-        canLoginOrLink={props.canLoginOrLink}
         disconnectDisabledReason={props.disconnectDisabledReason}
         disconnectNote={props.disconnectNote}
         onChangeWallet={props.onChangeWallet}
         onCopyAddress={props.onCopyAddress}
         onDisconnectWallet={props.onDisconnectWallet}
-        onLoginOrLink={props.onLoginOrLink}
       />
     );
   }
@@ -404,7 +390,7 @@ export function PrivyConnectPill() {
   }
 
   const addr = wallet?.address ?? null;
-  const label = addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : "Connect";
+  const label = addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "Connect";
 
   const handleSendCode = async () => {
     setBusy(true);
@@ -462,22 +448,6 @@ export function PrivyConnectPill() {
     }
   };
 
-  const handleLoginOrLink = async () => {
-    if (!wallet || typeof wallet.loginOrLink !== "function") {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await wallet.loginOrLink();
-      setIsOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to sign in with wallet.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const handleCopyAddress = async () => {
     if (!addr) {
       return;
@@ -499,13 +469,11 @@ export function PrivyConnectPill() {
 
   const disconnectDisabledReason = getDisconnectDisabledReason(wallet);
   const disconnectNote = getDisconnectNote(wallet);
-  const canLoginOrLink = Boolean(wallet && typeof wallet.loginOrLink === "function");
   const popoverContent: ReactNode = (
     <ConnectPopoverContent
       addr={addr}
       authenticated={authenticated}
       busy={busy}
-      canLoginOrLink={canLoginOrLink}
       code={code}
       codeSent={codeSent}
       disconnectDisabledReason={disconnectDisabledReason}
@@ -521,7 +489,6 @@ export function PrivyConnectPill() {
       }}
       onCopyAddress={handleCopyAddress}
       onDisconnectWallet={handleDisconnectWallet}
-      onLoginOrLink={handleLoginOrLink}
       onSendCode={handleSendCode}
       onVerifyCode={handleVerifyCode}
       setCode={setCode}
@@ -545,21 +512,25 @@ export function PrivyConnectPill() {
       <button
         aria-expanded={isOpen}
         aria-haspopup="dialog"
-        className="flex items-center gap-3 rounded-full border border-white/10 bg-neutral-900/90 px-4 py-2.5 font-semibold text-base text-white shadow-lg backdrop-blur transition hover:bg-neutral-900"
+        className="flex h-10 items-center gap-2 rounded-[20px] border border-white/[0.06] bg-neutral-900 px-3 py-1.5 font-semibold text-[14px] text-white shadow-md backdrop-blur transition hover:bg-neutral-800"
         onClick={handlePillClick}
         type="button"
       >
-        <span className="grid h-9 w-9 place-items-center rounded-xl bg-white/10 shadow-sm ring-1 ring-white/10">
-          <Wallet aria-hidden className="h-5 w-5 text-white/90" />
+        <span className="grid h-8 w-8 place-items-center rounded-xl bg-white/10 shadow-sm ring-1 ring-white/10">
+          <Wallet aria-hidden className="h-4 w-4 text-white/90" />
         </span>
         <span>{label}</span>
+        <ChevronDown
+          aria-hidden
+          className={isOpen ? "h-4 w-4 rotate-180 text-white/65" : "h-4 w-4 text-white/65"}
+        />
       </button>
 
       {isOpen ? (
-        <div className="absolute right-0 z-50 mt-2 w-80 rounded-3xl border border-white/10 bg-neutral-950/95 p-2 text-sm shadow-2xl backdrop-blur">
+        <div className="absolute right-0 z-50 mt-2 w-64 rounded-xl border border-white/[0.06] bg-neutral-900/95 p-2 text-sm shadow-xl backdrop-blur">
           {popoverContent}
-          {notice ? <div className="px-3 pb-2 text-emerald-200 text-xs">{notice}</div> : null}
-          {error ? <div className="px-3 pb-2 text-red-300 text-xs">{error}</div> : null}
+          {notice ? <div className="px-4 pb-2 text-emerald-200 text-xs">{notice}</div> : null}
+          {error ? <div className="px-4 pb-2 text-red-300 text-xs">{error}</div> : null}
         </div>
       ) : null}
     </div>
