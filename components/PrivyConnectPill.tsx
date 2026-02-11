@@ -1,6 +1,6 @@
 "use client";
 
-import { useConnectWallet, useLoginWithEmail, useLogout, usePrivy } from "@privy-io/react-auth";
+import { useConnectWallet, useLoginWithEmail, usePrivy } from "@privy-io/react-auth";
 import { Copy, LogOut, Settings, Wallet } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
@@ -91,7 +91,6 @@ type SignedInPanelProps = {
   onCopyAddress: () => Promise<void>;
   onChangeWallet: () => void;
   onDisconnectWallet: () => Promise<void>;
-  onSignOut: () => Promise<void>;
 };
 
 type ConnectedWalletPanelProps = {
@@ -259,7 +258,6 @@ function SignedInPanel({
   onCopyAddress,
   onChangeWallet,
   onDisconnectWallet,
-  onSignOut,
 }: SignedInPanelProps) {
   const disconnectDisabled = Boolean(disconnectDisabledReason);
   return (
@@ -292,12 +290,6 @@ function SignedInPanel({
         {disconnectNote ? (
           <div className="px-3 pt-2 text-white/50 text-xs">{disconnectNote}</div>
         ) : null}
-        <MenuItem
-          disabled={busy}
-          icon={<LogOut className="h-4 w-4 text-white/70" />}
-          label="Sign out"
-          onClick={onSignOut}
-        />
       </div>
     </div>
   );
@@ -319,7 +311,6 @@ function ConnectPopoverContent(props: {
   onDisconnectWallet: () => Promise<void>;
   onLoginOrLink: () => Promise<void>;
   onSendCode: () => Promise<void>;
-  onSignOut: () => Promise<void>;
   onVerifyCode: () => Promise<void>;
   setCode: (value: string) => void;
   setEmail: (value: string) => void;
@@ -334,7 +325,6 @@ function ConnectPopoverContent(props: {
         onChangeWallet={props.onChangeWallet}
         onCopyAddress={props.onCopyAddress}
         onDisconnectWallet={props.onDisconnectWallet}
-        onSignOut={props.onSignOut}
       />
     );
   }
@@ -381,7 +371,6 @@ function ConnectPopoverContent(props: {
 
 export function PrivyConnectPill() {
   const { ready, authenticated } = usePrivy();
-  const { logout } = useLogout();
   const { wallet } = usePrivyWalletClient();
   const { sendCode, loginWithCode } = useLoginWithEmail();
   const { setSoftDisconnected } = useSoftWalletDisconnect();
@@ -441,19 +430,6 @@ export function PrivyConnectPill() {
       setCodeSent(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to verify code.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSignOut = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      await logout();
-      setIsOpen(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to sign out.");
     } finally {
       setBusy(false);
     }
@@ -547,7 +523,6 @@ export function PrivyConnectPill() {
       onDisconnectWallet={handleDisconnectWallet}
       onLoginOrLink={handleLoginOrLink}
       onSendCode={handleSendCode}
-      onSignOut={handleSignOut}
       onVerifyCode={handleVerifyCode}
       setCode={setCode}
       setEmail={setEmail}
