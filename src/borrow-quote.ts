@@ -2,6 +2,7 @@ import type { Address } from "viem";
 import { poolAbi } from "@/lib/abi/pool";
 import { publicClient } from "@/lib/celoClients";
 import { getRevertSelector } from "@/lib/get-revert-selector";
+import { readBorrowPoolState } from "@/src/borrow-actions";
 import { CELO_YIELD_POOL } from "@/src/poolInfo";
 
 const U128_MAX = BigInt("340282366920938463463374607431768211455");
@@ -21,22 +22,6 @@ async function tryPreviewSellFyToken(fyIn: bigint) {
   } catch {
     return null;
   }
-}
-
-function readPoolBaseBalance() {
-  return publicClient.readContract({
-    abi: poolAbi,
-    address: CELO_YIELD_POOL.poolAddress as Address,
-    functionName: "getBaseBalance",
-  });
-}
-
-function readPoolFyBalance() {
-  return publicClient.readContract({
-    abi: poolAbi,
-    address: CELO_YIELD_POOL.poolAddress as Address,
-    functionName: "getFYTokenBalance",
-  });
 }
 
 export type BorrowQuote = {
@@ -77,23 +62,15 @@ function isNegativeInterestRatesNotAllowed(caught: unknown) {
 }
 
 async function readPoolState() {
-  const [baseBalance, fyBalance, cache] = await Promise.all([
-    readPoolBaseBalance(),
-    readPoolFyBalance(),
-    readPoolCache(),
-  ]);
-  const [baseCached, fyTokenCached] = cache;
-  const cachedGtLive = baseCached > baseBalance || fyTokenCached > fyBalance;
-  const pendingBase = baseBalance > baseCached ? baseBalance - baseCached : 0n;
-  const pendingFy = fyBalance > fyTokenCached ? fyBalance - fyTokenCached : 0n;
+  const state = await readBorrowPoolState();
   return {
-    baseBalance,
-    baseCached,
-    cachedGtLive,
-    fyBalance,
-    fyTokenCached,
-    pendingBase,
-    pendingFy,
+    baseBalance: state.baseLive,
+    baseCached: state.baseCached,
+    cachedGtLive: state.cachedGtLive,
+    fyBalance: state.fyLive,
+    fyTokenCached: state.fyCached,
+    pendingBase: state.pendingBase,
+    pendingFy: state.pendingFy,
   };
 }
 
@@ -154,14 +131,6 @@ async function findMinFyForKes(desiredKesOut: bigint, low: bigint, high: bigint)
   }
 
   return right;
-}
-
-function readPoolCache() {
-  return publicClient.readContract({
-    abi: poolAbi,
-    address: CELO_YIELD_POOL.poolAddress as Address,
-    functionName: "getCache",
-  });
 }
 
 // Finds the minimum fyIn such that sellFYTokenPreview(fyIn) >= desiredKesOut.

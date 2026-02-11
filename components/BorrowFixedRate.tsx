@@ -17,7 +17,13 @@ import { useKesmPerUsdRate } from "@/lib/useKesmPerUsdRate";
 import { usePrivyAddress } from "@/lib/usePrivyAddress";
 import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
 import { aprFromPriceWad, formatAprPercent, WAD } from "@/src/apr";
-import { approveUsdtJoin, buildVault, pour, sellFyKes } from "@/src/borrow-actions";
+import {
+  approveUsdtJoin,
+  buildVault,
+  pour,
+  recoverBorrowPool,
+  sellFyKes,
+} from "@/src/borrow-actions";
 import { BORROW_CONFIG } from "@/src/borrow-config";
 import { quoteFyForKes } from "@/src/borrow-quote";
 import { CELO_YIELD_POOL } from "@/src/poolInfo";
@@ -27,6 +33,15 @@ type BorrowFixedRateProps = {
 };
 
 type BorrowStep = "borrow" | "collateral";
+type BorrowReceiveMode = "KESM_NOW" | "FY_KESM";
+type TxOutcome = "SUCCESS" | "REVERTED";
+type QuoteFailureReason =
+  | "INSUFFICIENT_LIQUIDITY"
+  | "CACHE_GT_LIVE"
+  | "POOL_PENDING"
+  | "NEGATIVE_INTEREST_RATES_NOT_ALLOWED"
+  | "PREVIEW_REVERT"
+  | "UNKNOWN";
 
 type TokenOption = {
   id: "USDT" | "KESm";
@@ -335,7 +350,7 @@ function CollateralIcon({ collateralId }: { collateralId: CollateralOption["id"]
   );
 }
 
-function quoteUnavailableHint(reason: string | undefined) {
+function quoteUnavailableHint(reason: QuoteFailureReason | undefined) {
   switch (reason) {
     case "INSUFFICIENT_LIQUIDITY":
       return "Pool liquidity is too low for this borrow size. Try a smaller amount.";
@@ -357,6 +372,7 @@ async function runBorrowFlow(params: {
   walletClient: WalletClient;
   collateral: bigint;
   borrowKesDesired: bigint;
+  receiveMode: BorrowReceiveMode;
   allowance: bigint | null;
   vaultId: Hex | null;
   storageKey: string | null;
@@ -404,9 +420,25 @@ async function runBorrowFlow(params: {
     throw new Error("Vault unavailable.");
   }
 
+  if (params.receiveMode === "FY_KESM") {
+    params.onStatus("Step 3/3: Supplying collateral and borrowing fyKESm…");
+    const result = await pour({
+      account: params.account,
+      art: params.borrowKesDesired,
+      ink: params.collateral,
+      nonce: nextNonce,
+      to: params.account,
+      vaultId: nextVaultId,
+      walletClient: params.walletClient,
+    });
+    params.onTxHash(result.txHash);
+    return { vaultId: nextVaultId };
+  }
+
   const quote = await quoteFyForKes(params.borrowKesDesired);
   if (quote.fyToBorrow <= 0n) {
-    throw new Error(`Quote unavailable. ${quoteUnavailableHint(quote.reason)}`);
+    const reason = quote.reason ?? "UNKNOWN";
+    throw new Error(`QUOTE_UNAVAILABLE|${reason}`);
   }
 
   params.onStatus("Step 3/4: Supplying collateral and borrowing…");
@@ -431,7 +463,6 @@ async function runBorrowFlow(params: {
     nonce: nextNonce,
     walletClient: params.walletClient,
   });
-  nextNonce += 1;
   params.onTxHash(swapResult.txHash);
 
   return { vaultId: nextVaultId };
@@ -708,10 +739,30 @@ function CollateralCard({
   );
 }
 
+function getSubmitButtonLabel(params: {
+  isSubmitting: boolean;
+  primaryLabel?: string;
+  txOutcome?: TxOutcome | null;
+}) {
+  if (params.isSubmitting) {
+    return "Submitting…";
+  }
+  if (params.txOutcome === "SUCCESS") {
+    return "Success";
+  }
+  if (params.txOutcome === "REVERTED") {
+    return "Reverted";
+  }
+  return params.primaryLabel ?? "Next Step";
+}
+
 function SubmitSection({
   canContinue,
   isSubmitting,
   onSubmit,
+  primaryLabel,
+  secondaryAction,
+  txOutcome,
   submitError,
   txHash,
   txStatus,
@@ -719,6 +770,9 @@ function SubmitSection({
   canContinue: boolean;
   isSubmitting: boolean;
   onSubmit: () => void;
+  primaryLabel?: string;
+  secondaryAction?: { label: string; onClick: () => void } | null;
+  txOutcome?: TxOutcome | null;
   submitError: string | null;
   txHash: Hex | null;
   txStatus: string | null;
@@ -726,6 +780,7 @@ function SubmitSection({
   // If we don't have a tx hash, treat txStatus as an error/notice and render it inline.
   // The "status card" is reserved for in-flight / submitted transactions.
   const inlineStatus = txHash ? null : txStatus;
+  const buttonLabel = getSubmitButtonLabel({ isSubmitting, primaryLabel, txOutcome });
   return (
     <>
       <button
@@ -738,8 +793,19 @@ function SubmitSection({
         onClick={onSubmit}
         type="button"
       >
-        {isSubmitting ? "Submitting…" : "Next Step"}
+        {buttonLabel}
       </button>
+
+      {secondaryAction ? (
+        <button
+          className="mt-2 h-10 w-full rounded-2xl border border-numo-border bg-white font-semibold text-numo-muted text-sm transition hover:bg-numo-pill/40"
+          disabled={isSubmitting}
+          onClick={secondaryAction.onClick}
+          type="button"
+        >
+          {secondaryAction.label}
+        </button>
+      ) : null}
 
       {submitError ? <div className="mt-3 text-rose-700 text-xs">{submitError}</div> : null}
       {inlineStatus ? <div className="mt-2 text-rose-700 text-xs">{inlineStatus}</div> : null}
@@ -894,11 +960,31 @@ function getBorrowStepError(token: TokenOption["id"], parsedBorrowKes: bigint | 
   return null;
 }
 
+function parseQuoteFailureReason(message: string): QuoteFailureReason | null {
+  const prefix = "QUOTE_UNAVAILABLE|";
+  if (!message.startsWith(prefix)) {
+    return null;
+  }
+  const raw = message.slice(prefix.length);
+  switch (raw) {
+    case "INSUFFICIENT_LIQUIDITY":
+    case "CACHE_GT_LIVE":
+    case "POOL_PENDING":
+    case "NEGATIVE_INTEREST_RATES_NOT_ALLOWED":
+    case "PREVIEW_REVERT":
+    case "UNKNOWN":
+      return raw;
+    default:
+      return "UNKNOWN";
+  }
+}
+
 async function submitBorrowTx(params: {
   account: Address;
   walletClient: WalletClient;
   parsedCollateral: bigint;
   parsedBorrowKes: bigint;
+  receiveMode: BorrowReceiveMode;
   usdtAllowance: bigint | null;
   vaultId: Hex | null;
   storageKey: string | null;
@@ -915,6 +1001,7 @@ async function submitBorrowTx(params: {
       onStatus: params.onStatus,
       onTxHash: params.onTxHash,
       persistVaultId: params.persistVaultId,
+      receiveMode: params.receiveMode,
       storageKey: params.storageKey,
       vaultId: params.vaultId,
       walletClient: params.walletClient,
@@ -922,7 +1009,15 @@ async function submitBorrowTx(params: {
     return { ok: true as const, vaultId: flow.vaultId };
   } catch (caught) {
     const message = caught instanceof Error ? caught.message : "Borrow failed.";
-    return { message, ok: false as const };
+    const quoteReason = parseQuoteFailureReason(message);
+    if (quoteReason) {
+      return {
+        message: `Quote unavailable. ${quoteUnavailableHint(quoteReason)}`,
+        ok: false as const,
+        quoteReason,
+      };
+    }
+    return { message, ok: false as const, quoteReason: null };
   }
 }
 
@@ -933,10 +1028,13 @@ async function handleBorrowSubmit(params: {
   submitError: string | null;
   parsedCollateral: bigint | null;
   parsedBorrowKes: bigint | null;
+  receiveMode: BorrowReceiveMode;
   usdtAllowance: bigint | null;
   vaultId: Hex | null;
   storageKey: string | null;
   setIsSubmitting: (value: boolean) => void;
+  setQuoteFailureReason: (value: QuoteFailureReason | null) => void;
+  setTxOutcome: (value: TxOutcome | null) => void;
   setTxStatus: (value: string | null) => void;
   setTxHash: (value: Hex | null) => void;
   setVaultId: (value: Hex | null) => void;
@@ -961,6 +1059,8 @@ async function handleBorrowSubmit(params: {
   const borrowKesDesired = params.parsedBorrowKes as bigint;
 
   params.setIsSubmitting(true);
+  params.setQuoteFailureReason(null);
+  params.setTxOutcome(null);
   params.setTxStatus(null);
   params.setTxHash(null);
 
@@ -971,6 +1071,7 @@ async function handleBorrowSubmit(params: {
     parsedBorrowKes: borrowKesDesired,
     parsedCollateral: collateral,
     persistVaultId: (next) => params.setVaultId(next),
+    receiveMode: params.receiveMode,
     storageKey: params.storageKey,
     usdtAllowance: params.usdtAllowance,
     vaultId: params.vaultId,
@@ -978,15 +1079,67 @@ async function handleBorrowSubmit(params: {
   });
 
   if (!result.ok) {
+    params.setQuoteFailureReason(result.quoteReason ?? null);
+    params.setTxOutcome("REVERTED");
     params.setTxStatus(result.message);
     params.setIsSubmitting(false);
     return;
   }
 
+  params.setQuoteFailureReason(null);
+  params.setTxOutcome("SUCCESS");
   params.setTxStatus("Position updated.");
   params.setVaultId(result.vaultId);
   await params.refetch(params.userAddress);
   params.setIsSubmitting(false);
+}
+
+async function handleRecoverPool(params: {
+  userAddress?: Address;
+  walletClient: WalletClient | null;
+  setIsSubmitting: (value: boolean) => void;
+  setQuoteFailureReason: (value: QuoteFailureReason | null) => void;
+  setTxOutcome: (value: TxOutcome | null) => void;
+  setTxHash: (value: Hex | null) => void;
+  setTxStatus: (value: string | null) => void;
+}) {
+  if (!(params.userAddress && params.walletClient)) {
+    return;
+  }
+
+  params.setIsSubmitting(true);
+  params.setTxOutcome(null);
+  params.setTxHash(null);
+  params.setTxStatus("Checking pool state…");
+  try {
+    const recovery = await recoverBorrowPool({
+      account: params.userAddress,
+      onStatus: (status) => params.setTxStatus(status),
+      onTxHash: (hash) => params.setTxHash(hash),
+      walletClient: params.walletClient,
+    });
+    if (recovery.reason === "CACHE_GT_LIVE") {
+      params.setTxOutcome("REVERTED");
+      params.setTxStatus(
+        "Pool cache exceeds live balances. Try again later or run a small manual sync trade."
+      );
+      return;
+    }
+    if (recovery.cleaned) {
+      params.setQuoteFailureReason(null);
+      params.setTxOutcome("SUCCESS");
+      params.setTxStatus("Pool synced. You can borrow again.");
+      return;
+    }
+    params.setTxOutcome("REVERTED");
+    params.setTxStatus("Pool still has pending balances. Retry Fix Pool.");
+  } catch (caught) {
+    const message = caught instanceof Error ? caught.message : "Pool sync failed.";
+    params.setTxOutcome("REVERTED");
+    params.setTxStatus(message);
+  } finally {
+    params.setIsSubmitting(false);
+  }
 }
 
 function BorrowStepView(params: {
@@ -1038,6 +1191,7 @@ function BorrowStepView(params: {
         onSubmit={params.onNext}
         submitError={params.borrowStepError}
         txHash={null}
+        txOutcome={null}
         txStatus={null}
       />
     </>
@@ -1059,11 +1213,16 @@ function CollateralStepView(params: {
   vaultDiscoveryStatus: "idle" | "loading" | "ready" | "error";
   vaultDiscoveryError: string | null;
   canSubmit: boolean;
+  quoteFailureReason: QuoteFailureReason | null;
+  receiveMode: BorrowReceiveMode;
+  onSelectReceiveMode: (mode: BorrowReceiveMode) => void;
   isSubmitting: boolean;
   onSubmit: () => void;
+  onRecoverPool: () => void;
   submitError: string | null;
   txHash: Hex | null;
   txStatus: string | null;
+  txOutcome: TxOutcome | null;
   onBack: () => void;
 }) {
   let vaultLabel = "No vault found.";
@@ -1080,6 +1239,7 @@ function CollateralStepView(params: {
       : `${params.collateralizationPercent.toFixed(0)}%`;
   const collateralOk =
     params.collateralizationPercent !== null && params.collateralizationPercent >= 110;
+  const showPoolRecover = params.quoteFailureReason === "POOL_PENDING";
 
   return (
     <>
@@ -1136,12 +1296,49 @@ function CollateralStepView(params: {
         </div>
       </div>
 
+      <div className="mt-4">
+        <div className="text-numo-muted text-xs">Receive</div>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <button
+            className={cn(
+              "rounded-2xl border px-3 py-2 text-left transition",
+              params.receiveMode === "KESM_NOW"
+                ? "border-numo-ink bg-numo-pill/40"
+                : "border-numo-border bg-white hover:bg-numo-pill/40"
+            )}
+            onClick={() => params.onSelectReceiveMode("KESM_NOW")}
+            type="button"
+          >
+            <div className="font-semibold text-numo-ink text-sm">KESm now</div>
+            <div className="text-numo-muted text-xs">Borrow and swap immediately</div>
+          </button>
+          <button
+            className={cn(
+              "rounded-2xl border px-3 py-2 text-left transition",
+              params.receiveMode === "FY_KESM"
+                ? "border-numo-ink bg-numo-pill/40"
+                : "border-numo-border bg-white hover:bg-numo-pill/40"
+            )}
+            onClick={() => params.onSelectReceiveMode("FY_KESM")}
+            type="button"
+          >
+            <div className="font-semibold text-numo-ink text-sm">fyKESm</div>
+            <div className="text-numo-muted text-xs">Skip pool swap; swap later</div>
+          </button>
+        </div>
+      </div>
+
       <SubmitSection
         canContinue={params.canSubmit}
         isSubmitting={params.isSubmitting}
-        onSubmit={params.onSubmit}
+        onSubmit={showPoolRecover ? params.onRecoverPool : params.onSubmit}
+        primaryLabel={showPoolRecover ? "Fix Pool" : "Next Step"}
+        secondaryAction={
+          showPoolRecover ? { label: "Try Borrow Again", onClick: params.onSubmit } : null
+        }
         submitError={params.submitError}
         txHash={params.txHash}
+        txOutcome={params.txOutcome}
         txStatus={params.txStatus}
       />
     </>
@@ -1155,6 +1352,8 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
   const [step, setStep] = useState<BorrowStep>("borrow");
   const [collateralInput, setCollateralInput] = useState("");
   const [borrowInput, setBorrowInput] = useState("");
+  const [receiveMode, setReceiveMode] = useState<BorrowReceiveMode>("KESM_NOW");
+  const [quoteFailureReason, setQuoteFailureReason] = useState<QuoteFailureReason | null>(null);
   const [token, setToken] = useState<TokenOption["id"]>("KESm");
   const maturityOptions = useBorrowMaturityOptions();
   const defaultMaturityId = maturityOptions[0]?.id ?? "";
@@ -1166,6 +1365,7 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [txStatus, setTxStatus] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<Hex | null>(null);
+  const [txOutcome, setTxOutcome] = useState<TxOutcome | null>(null);
 
   const { storageKey, vaultId, setVaultId } = useBorrowVaultId({
     ilkId: BORROW_CONFIG.ilk.usdt,
@@ -1206,9 +1406,12 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
     void borrowInput;
     void collateralInput;
     void selectedMaturityId;
+    void receiveMode;
+    setQuoteFailureReason(null);
+    setTxOutcome(null);
     setTxStatus(null);
     setTxHash(null);
-  }, [borrowInput, collateralInput, selectedMaturityId]);
+  }, [borrowInput, collateralInput, receiveMode, selectedMaturityId]);
 
   useEffect(() => {
     // Once we know the real maturity id, select it unless the user already picked something else.
@@ -1287,6 +1490,8 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
               maturityOptions={maturityOptions}
               onBorrowChange={(value) => setBorrowInput(value)}
               onNext={() => {
+                setQuoteFailureReason(null);
+                setTxOutcome(null);
                 setTxStatus(null);
                 setTxHash(null);
                 setStep("collateral");
@@ -1326,14 +1531,29 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
                 }
                 setCollateralInput(formatUnits(usdtBalance, usdtDecimals));
               }}
+              onRecoverPool={() =>
+                void handleRecoverPool({
+                  setIsSubmitting,
+                  setQuoteFailureReason,
+                  setTxHash,
+                  setTxOutcome,
+                  setTxStatus,
+                  userAddress,
+                  walletClient,
+                })
+              }
+              onSelectReceiveMode={(mode) => setReceiveMode(mode)}
               onSubmit={() => {
                 void handleBorrowSubmit({
                   isCelo,
                   parsedBorrowKes,
                   parsedCollateral,
+                  receiveMode,
                   refetch,
                   setIsSubmitting,
+                  setQuoteFailureReason,
                   setTxHash,
+                  setTxOutcome,
                   setTxStatus,
                   setVaultId,
                   storageKey,
@@ -1345,8 +1565,11 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
                 });
               }}
               onToggleCollateralMenu={() => setCollateralMenuOpen((value) => !value)}
+              quoteFailureReason={quoteFailureReason}
+              receiveMode={receiveMode}
               submitError={submitError}
               txHash={txHash}
+              txOutcome={txOutcome}
               txStatus={txStatus}
               usdtBalance={usdtBalance}
               usdtDecimals={usdtDecimals}
