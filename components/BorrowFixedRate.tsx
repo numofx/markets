@@ -1186,7 +1186,7 @@ function BorrowStepView(params: {
         canContinue={params.canProceed}
         isSubmitting={false}
         onSubmit={params.onNext}
-        submitError={params.borrowStepError}
+        submitError={null}
         txHash={null}
         txOutcome={null}
         txStatus={null}
