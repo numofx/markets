@@ -17,7 +17,7 @@ type NavBarProps = {
   onSelectChain: (chainId: number | null) => void;
 };
 
-const NETWORKS = [42_220, 8453];
+const NETWORKS = [42_220, 8453, 42_161];
 
 export function NavBar({
   items,

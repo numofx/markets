@@ -19,6 +19,7 @@ type NetworkFilterProps = {
 
 const DEFAULT_CHAIN_LABELS: Record<number, string> = {
   8453: "Base",
+  42161: "Arbitrum",
   42220: "Celo",
   44787: "Alfajores",
 };
@@ -33,6 +34,9 @@ function NetworkIcon({ chainId }: { chainId: ChainId }) {
   }
   if (chainId === 8453) {
     return <Image alt="Base" height={14} src="/assets/base.svg" width={14} />;
+  }
+  if (chainId === 42_161) {
+    return <Image alt="Arbitrum" height={14} src="/assets/arbitrum.png" width={14} />;
   }
   return null;
 }

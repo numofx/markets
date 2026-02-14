@@ -45,7 +45,7 @@ type QuoteFailureReason =
   | "UNKNOWN";
 
 type TokenOption = {
-  id: "USDT" | "USDC" | "cNGN" | "BRZ" | "KESm";
+  id: "USDT" | "USDC" | "USDC_ARB" | "cNGN" | "BRZ" | "MXNB" | "KESm";
   chainId: number;
   label: string;
   name: string;
@@ -62,7 +62,9 @@ const TOKEN_ICON_SRC = {
   BRZ: "/assets/brz.svg",
   cNGN: "/assets/cngn.png",
   KESm: "/assets/KESm%20(Mento%20Kenyan%20Shilling).svg",
+  MXNB: "/assets/mxnb.png",
   USDC: "/assets/usdc.svg",
+  USDC_ARB: "/assets/usdc.svg",
   USDT: "/assets/usdt.svg",
 } as const satisfies Record<TokenOption["id"], string>;
 
@@ -78,8 +80,10 @@ type MaturityOption = {
 const TOKENS: TokenOption[] = [
   { chainId: 42_220, id: "USDT", label: "USDT", name: "Tether USD" },
   { chainId: 8453, id: "USDC", label: "USDC", name: "Circle USD" },
+  { chainId: 42_161, id: "USDC_ARB", label: "USDC", name: "Circle USD" },
   { chainId: 8453, id: "cNGN", label: "cNGN", name: "WrappedCBDC NGN" },
   { chainId: 8453, id: "BRZ", label: "BRZ", name: "Transfero BRL" },
+  { chainId: 42_161, id: "MXNB", label: "MXNB", name: "Bitso MXN" },
   { chainId: 42_220, id: "KESm", label: "KESm", name: "Mento KES" },
 ];
 
@@ -87,11 +91,14 @@ const TOKEN_ADDRESS_LABEL: Record<TokenOption["id"], string> = {
   BRZ: "0xE918...61B4",
   cNGN: "0xC930...62D3",
   KESm: "0x456a...B0d0",
+  MXNB: "0xF197...80aA",
   USDC: "0x8335...2913",
+  USDC_ARB: "0xaf88...5831",
   USDT: "0x4806...3D5e",
 };
 const CHAIN_LABELS: Record<number, string> = {
   8453: "Base",
+  42161: "Arbitrum",
   42220: "Celo",
 };
 
@@ -607,6 +614,17 @@ function ChainIcon({ chainId, className }: { chainId: number; className?: string
         className={cn("h-3 w-3", className)}
         height={12}
         src="/assets/base.svg"
+        width={12}
+      />
+    );
+  }
+  if (chainId === 42_161) {
+    return (
+      <Image
+        alt="Arbitrum"
+        className={cn("h-3 w-3", className)}
+        height={12}
+        src="/assets/arbitrum.png"
         width={12}
       />
     );
