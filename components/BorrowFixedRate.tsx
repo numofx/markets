@@ -45,7 +45,7 @@ type QuoteFailureReason =
   | "UNKNOWN";
 
 type TokenOption = {
-  id: "USDT" | "USDC" | "cNGN" | "KESm";
+  id: "USDT" | "USDC" | "cNGN" | "BRZ" | "KESm";
   chainId: number;
   label: string;
   name: string;
@@ -59,6 +59,7 @@ type CollateralOption = {
 };
 
 const TOKEN_ICON_SRC = {
+  BRZ: "/assets/brz.svg",
   cNGN: "/assets/cngn.png",
   KESm: "/assets/KESm%20(Mento%20Kenyan%20Shilling).svg",
   USDC: "/assets/usdc.svg",
@@ -76,12 +77,14 @@ type MaturityOption = {
 
 const TOKENS: TokenOption[] = [
   { chainId: 42_220, id: "USDT", label: "USDT", name: "Tether USD" },
-  { chainId: 8453, id: "USDC", label: "USDC", name: "USD Coin" },
-  { chainId: 8453, id: "cNGN", label: "cNGN", name: "Compliant Naira" },
-  { chainId: 42_220, id: "KESm", label: "KESm", name: "Kenyan Shilling" },
+  { chainId: 8453, id: "USDC", label: "USDC", name: "Circle USD" },
+  { chainId: 8453, id: "cNGN", label: "cNGN", name: "WrappedCBDC NGN" },
+  { chainId: 8453, id: "BRZ", label: "BRZ", name: "Transfero BRL" },
+  { chainId: 42_220, id: "KESm", label: "KESm", name: "Mento KES" },
 ];
 
 const TOKEN_ADDRESS_LABEL: Record<TokenOption["id"], string> = {
+  BRZ: "0xE918...61B4",
   cNGN: "0xC930...62D3",
   KESm: "0x456a...B0d0",
   USDC: "0x8335...2913",
