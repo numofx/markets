@@ -5,8 +5,9 @@ import { cn } from "@/lib/cn";
 
 type LendCardProps = {
   className?: string;
+  selectedChain: number | null;
 };
 
-export function LendCard({ className }: LendCardProps) {
-  return <LendFixedRate className={cn(className)} />;
+export function LendCard({ className, selectedChain }: LendCardProps) {
+  return <LendFixedRate className={cn(className)} selectedChain={selectedChain} />;
 }

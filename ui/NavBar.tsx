@@ -1,6 +1,7 @@
 import Image from "next/image";
 import { PrivyConnectPill } from "@/components/PrivyConnectPill";
 import { cn } from "@/lib/cn";
+import { NetworkFilter } from "@/ui/NetworkFilter";
 import { PillTabs } from "@/ui/PillTabs";
 
 type NavItem = {
@@ -12,9 +13,20 @@ type NavBarProps = {
   className?: string;
   activeTab?: string;
   onTabChange?: (value: string) => void;
+  selectedChain: number | null;
+  onSelectChain: (chainId: number | null) => void;
 };
 
-export function NavBar({ items, className, activeTab, onTabChange }: NavBarProps) {
+const NETWORKS = [42_220, 8453];
+
+export function NavBar({
+  items,
+  className,
+  activeTab,
+  onTabChange,
+  selectedChain,
+  onSelectChain,
+}: NavBarProps) {
   return (
     <header className={cn("mx-auto w-full max-w-6xl px-6 pt-6", className)}>
       <div className="grid grid-cols-3 items-center">
@@ -34,6 +46,11 @@ export function NavBar({ items, className, activeTab, onTabChange }: NavBarProps
         </div>
 
         <div className="flex items-center gap-2 justify-self-end">
+          <NetworkFilter
+            chainIds={NETWORKS}
+            onPressChain={onSelectChain}
+            selectedChain={selectedChain}
+          />
           <PrivyConnectPill />
         </div>
       </div>

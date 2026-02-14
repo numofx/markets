@@ -2,7 +2,7 @@
 
 import { ArrowLeft, Check, ChevronDown, ThumbsDown, ThumbsUp, Waves } from "lucide-react";
 import Image from "next/image";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Address, Hex, WalletClient } from "viem";
 import { formatUnits, parseUnits } from "viem";
 import { erc20Abi } from "@/lib/abi/erc20";
@@ -30,6 +30,7 @@ import { CELO_YIELD_POOL } from "@/src/poolInfo";
 
 type BorrowFixedRateProps = {
   className?: string;
+  selectedChain: number | null;
 };
 
 type BorrowStep = "borrow" | "collateral";
@@ -44,19 +45,23 @@ type QuoteFailureReason =
   | "UNKNOWN";
 
 type TokenOption = {
-  id: "USDT" | "KESm";
+  id: "USDT" | "USDC" | "cNGN" | "KESm";
+  chainId: number;
   label: string;
-  subtitle: string;
+  name: string;
 };
 
 type CollateralOption = {
   id: "USDT";
+  chainId: number;
   label: string;
   subtitle: string;
 };
 
 const TOKEN_ICON_SRC = {
+  cNGN: "/assets/cngn.png",
   KESm: "/assets/KESm%20(Mento%20Kenyan%20Shilling).svg",
+  USDC: "/assets/usdc.svg",
   USDT: "/assets/usdt.svg",
 } as const satisfies Record<TokenOption["id"], string>;
 
@@ -70,12 +75,25 @@ type MaturityOption = {
 };
 
 const TOKENS: TokenOption[] = [
-  { id: "USDT", label: "USDT", subtitle: "Tether USD" },
-  { id: "KESm", label: "KESm", subtitle: "Kenyan Shilling" },
+  { chainId: 42_220, id: "USDT", label: "USDT", name: "Tether USD" },
+  { chainId: 8453, id: "USDC", label: "USDC", name: "USD Coin" },
+  { chainId: 8453, id: "cNGN", label: "cNGN", name: "Compliant Naira" },
+  { chainId: 42_220, id: "KESm", label: "KESm", name: "Kenyan Shilling" },
 ];
 
+const TOKEN_ADDRESS_LABEL: Record<TokenOption["id"], string> = {
+  cNGN: "0xC930...62D3",
+  KESm: "0x456a...B0d0",
+  USDC: "0x8335...2913",
+  USDT: "0x4806...3D5e",
+};
+const CHAIN_LABELS: Record<number, string> = {
+  8453: "Base",
+  42220: "Celo",
+};
+
 const COLLATERAL_OPTIONS: CollateralOption[] = [
-  { id: "USDT", label: "USDT", subtitle: "Tether USD" },
+  { chainId: 42_220, id: "USDT", label: "USDT", subtitle: "Tether USD" },
 ];
 
 function formatMaturityDateLabel(maturitySeconds: number) {
@@ -314,7 +332,7 @@ function getBorrowValidationError(params: {
     return "Wallet client unavailable.";
   }
   if (params.token !== "KESm") {
-    return "Borrowing USDT is not supported yet.";
+    return "Borrowing this asset is not supported yet.";
   }
   if (!(params.collateral && params.borrow)) {
     return "Enter collateral and borrow amounts.";
@@ -325,26 +343,41 @@ function getBorrowValidationError(params: {
   return null;
 }
 
-function TokenIcon({ tokenId }: { tokenId: TokenOption["id"] }) {
+function TokenIcon({ chainId, tokenId }: { chainId: number; tokenId: TokenOption["id"] }) {
   return (
-    <span className="inline-flex rounded-full bg-gray-200 p-0.5">
-      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-sm">
-        <Image alt={`${tokenId} token icon`} height={20} src={TOKEN_ICON_SRC[tokenId]} width={20} />
+    <span className="relative inline-flex h-8 w-8 shrink-0 items-center justify-center">
+      <Image
+        alt={`${tokenId} token icon`}
+        className="h-8 w-8 rounded-full"
+        height={32}
+        src={TOKEN_ICON_SRC[tokenId]}
+        width={32}
+      />
+      <span className="-bottom-1 -right-1 absolute inline-flex h-4 w-4 items-center justify-center rounded-full border border-white bg-white shadow-sm">
+        <ChainIcon chainId={chainId} className="h-3 w-3" />
       </span>
     </span>
   );
 }
 
-function CollateralIcon({ collateralId }: { collateralId: CollateralOption["id"] }) {
+function CollateralIcon({
+  chainId,
+  collateralId,
+}: {
+  chainId: number;
+  collateralId: CollateralOption["id"];
+}) {
   return (
-    <span className="inline-flex rounded-full bg-gray-200 p-0.5">
-      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-sm">
-        <Image
-          alt={`${collateralId} token icon`}
-          height={20}
-          src={TOKEN_ICON_SRC[collateralId]}
-          width={20}
-        />
+    <span className="relative inline-flex h-8 w-8 shrink-0 items-center justify-center">
+      <Image
+        alt={`${collateralId} token icon`}
+        className="h-8 w-8 rounded-full"
+        height={32}
+        src={TOKEN_ICON_SRC[collateralId]}
+        width={32}
+      />
+      <span className="-bottom-1 -right-1 absolute inline-flex h-4 w-4 items-center justify-center rounded-full border border-white bg-white shadow-sm">
+        <ChainIcon chainId={chainId} className="h-3 w-3" />
       </span>
     </span>
   );
@@ -527,8 +560,15 @@ function TokenDropdown({
       type="button"
     >
       <span className="flex items-center gap-3">
-        {selected ? <TokenIcon tokenId={selected.id} /> : null}
-        <span className="font-semibold text-sm">{selected?.label}</span>
+        {selected ? <TokenIcon chainId={selected.chainId} tokenId={selected.id} /> : null}
+        {selected ? (
+          <span className="flex items-center gap-1 font-semibold text-sm">
+            <span>{selected.label}</span>
+            <span className="text-numo-muted">·</span>
+            <ChainIcon chainId={selected.chainId} />
+            <span className="text-numo-muted">{getChainLabel(selected.chainId)}</span>
+          </span>
+        ) : null}
       </span>
       <ChevronDown
         className={cn(
@@ -537,6 +577,47 @@ function TokenDropdown({
         )}
       />
     </button>
+  );
+}
+
+function getChainLabel(chainId: number) {
+  return CHAIN_LABELS[chainId] ?? `Chain ${chainId}`;
+}
+
+function ChainIcon({ chainId, className }: { chainId: number; className?: string }) {
+  if (chainId === 42_220) {
+    return (
+      <Image
+        alt="Celo"
+        className={cn("h-3 w-3", className)}
+        height={12}
+        src="/assets/celo.svg"
+        width={12}
+      />
+    );
+  }
+
+  if (chainId === 8453) {
+    return (
+      <Image
+        alt="Base"
+        className={cn("h-3 w-3", className)}
+        height={12}
+        src="/assets/base.svg"
+        width={12}
+      />
+    );
+  }
+
+  return (
+    <span
+      className={cn(
+        "inline-flex h-3 w-3 items-center justify-center rounded-full bg-blue-100 font-semibold text-[8px] text-blue-700",
+        className
+      )}
+    >
+      B
+    </span>
   );
 }
 
@@ -684,7 +765,10 @@ function CollateralCard({
               type="button"
             >
               <span className="flex items-center gap-2">
-                <CollateralIcon collateralId={selectedCollateral.id} />
+                <CollateralIcon
+                  chainId={selectedCollateral.chainId}
+                  collateralId={selectedCollateral.id}
+                />
                 <span className="font-semibold text-sm">{selectedCollateral.label}</span>
               </span>
               <ChevronDown
@@ -710,7 +794,7 @@ function CollateralCard({
                     type="button"
                   >
                     <span className="flex items-center gap-3">
-                      <CollateralIcon collateralId={option.id} />
+                      <CollateralIcon chainId={option.chainId} collateralId={option.id} />
                       <span className="flex flex-col">
                         <span className="font-semibold text-numo-ink text-sm">{option.label}</span>
                         <span className="text-numo-muted text-sm">{option.subtitle}</span>
@@ -825,6 +909,7 @@ function BorrowAmountRow({
   tokenMenuOpen,
   tokenMenuRef,
   selectedToken,
+  tokenOptions,
   onToggleTokenMenu,
   onSelectToken,
   token,
@@ -834,6 +919,7 @@ function BorrowAmountRow({
   tokenMenuOpen: boolean;
   tokenMenuRef: React.RefObject<HTMLDivElement | null>;
   selectedToken: TokenOption | undefined;
+  tokenOptions: TokenOption[];
   onToggleTokenMenu: () => void;
   onSelectToken: (id: TokenOption["id"]) => void;
   token: TokenOption["id"];
@@ -868,7 +954,7 @@ function BorrowAmountRow({
             <div className="px-3 py-2 font-semibold text-numo-muted text-xs tracking-wide">
               SELECT STABLECOIN
             </div>
-            {TOKENS.map((option) => {
+            {tokenOptions.map((option) => {
               const isSelected = option.id === token;
               return (
                 <button
@@ -883,13 +969,17 @@ function BorrowAmountRow({
                   type="button"
                 >
                   <span className="flex items-center gap-3">
-                    <TokenIcon tokenId={option.id} />
+                    <TokenIcon chainId={option.chainId} tokenId={option.id} />
                     <span className="flex flex-col">
-                      <span className="font-semibold text-numo-ink text-sm">{option.label}</span>
-                      <span className="text-numo-muted text-sm">{option.subtitle}</span>
+                      <span className="font-semibold text-lg text-numo-ink leading-tight">
+                        {option.name}
+                      </span>
+                      <span className="mt-0.5 flex items-center gap-3 text-numo-muted text-sm">
+                        <span>{option.label}</span>
+                        <span className="text-gray-400">{TOKEN_ADDRESS_LABEL[option.id]}</span>
+                      </span>
                     </span>
                   </span>
-                  {isSelected ? <Check className="h-5 w-5 text-black" /> : null}
                 </button>
               );
             })}
@@ -951,7 +1041,7 @@ function computeCollateralizationPercent(params: {
 
 function getBorrowStepError(token: TokenOption["id"], parsedBorrowKes: bigint | null) {
   if (token !== "KESm") {
-    return "Borrowing USDT is not supported yet.";
+    return "Borrowing this asset is not supported yet.";
   }
   if (!parsedBorrowKes) {
     return "Enter amount to borrow.";
@@ -1146,6 +1236,7 @@ function BorrowStepView(params: {
   onBorrowChange: (value: string) => void;
   token: TokenOption["id"];
   selectedToken: TokenOption | undefined;
+  tokenOptions: TokenOption[];
   tokenMenuOpen: boolean;
   tokenMenuRef: React.RefObject<HTMLDivElement | null>;
   onToggleTokenMenu: () => void;
@@ -1173,6 +1264,7 @@ function BorrowStepView(params: {
         token={params.token}
         tokenMenuOpen={params.tokenMenuOpen}
         tokenMenuRef={params.tokenMenuRef}
+        tokenOptions={params.tokenOptions}
       />
 
       <MaturityGrid
@@ -1342,7 +1434,7 @@ function CollateralStepView(params: {
   );
 }
 
-export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
+export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRateProps) {
   const userAddress = usePrivyAddress();
   const { isCelo, walletClient } = usePrivyWalletClient();
 
@@ -1352,6 +1444,16 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
   const [receiveMode, setReceiveMode] = useState<BorrowReceiveMode>("KESM_NOW");
   const [quoteFailureReason, setQuoteFailureReason] = useState<QuoteFailureReason | null>(null);
   const [token, setToken] = useState<TokenOption["id"]>("KESm");
+  const filteredTokens = useMemo(
+    () =>
+      TOKENS.filter((option) => {
+        if (selectedChain === null) {
+          return true;
+        }
+        return option.chainId === selectedChain;
+      }),
+    [selectedChain]
+  );
   const maturityOptions = useBorrowMaturityOptions();
   const defaultMaturityId = maturityOptions[0]?.id ?? "";
   const [selectedMaturityId, setSelectedMaturityId] = useState<string>(defaultMaturityId);
@@ -1420,7 +1522,20 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
     }
   }, [defaultMaturityId, selectedMaturityId]);
 
-  const selectedToken = TOKENS.find((t) => t.id === token) ?? TOKENS[0];
+  useEffect(() => {
+    if (filteredTokens.length === 0) {
+      return;
+    }
+    if (filteredTokens.some((option) => option.id === token)) {
+      return;
+    }
+    setToken(filteredTokens[0].id);
+  }, [filteredTokens, token]);
+
+  const selectedToken =
+    filteredTokens.find((selectedOption) => selectedOption.id === token) ??
+    filteredTokens[0] ??
+    TOKENS[0];
 
   useDismissOnEscapeAndOutsideClick(tokenMenuOpen, tokenMenuRef, () => setTokenMenuOpen(false));
   useDismissOnEscapeAndOutsideClick(collateralMenuOpen, collateralMenuRef, () =>
@@ -1501,6 +1616,7 @@ export function BorrowFixedRate({ className }: BorrowFixedRateProps) {
               token={token}
               tokenMenuOpen={tokenMenuOpen}
               tokenMenuRef={tokenMenuRef}
+              tokenOptions={filteredTokens}
             />
           ) : (
             <CollateralStepView

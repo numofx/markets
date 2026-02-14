@@ -1,17 +1,9 @@
 "use client";
 
-import {
-  ArrowLeft,
-  Check,
-  CheckCircle2,
-  ChevronDown,
-  ExternalLink,
-  Wallet,
-  Waves,
-} from "lucide-react";
+import { ArrowLeft, CheckCircle2, ChevronDown, ExternalLink, Wallet, Waves } from "lucide-react";
 import Image from "next/image";
 import type { Dispatch, RefObject, SetStateAction } from "react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Address, Hex } from "viem";
 import { decodeEventLog, formatUnits, parseUnits } from "viem";
 import { celo } from "viem/chains";
@@ -28,11 +20,14 @@ import { CELO_YIELD_POOL } from "@/src/poolInfo";
 
 type LendFixedRateProps = {
   className?: string;
+  selectedChain: number | null;
 };
 
 type TokenOption = {
-  id: "USDT" | "KESm";
+  id: "USDT" | "USDC" | "cNGN" | "KESm";
+  chainId: number;
   label: string;
+  name: string;
 };
 
 type LendStep = "form" | "review" | "confirm";
@@ -46,7 +41,9 @@ type LendTxPhase =
   | "error";
 
 const TOKEN_ICON_SRC = {
+  cNGN: "/assets/cngn.png",
   KESm: "/assets/KESm%20(Mento%20Kenyan%20Shilling).svg",
+  USDC: "/assets/usdc.svg",
   USDT: "/assets/usdt.svg",
 } as const satisfies Record<TokenOption["id"], string>;
 
@@ -100,9 +97,21 @@ type MaturityOption = {
 };
 
 const TOKENS: TokenOption[] = [
-  { id: "USDT", label: "USDT" },
-  { id: "KESm", label: "KESm" },
+  { chainId: 42_220, id: "USDT", label: "USDT", name: "Tether USD" },
+  { chainId: 8453, id: "USDC", label: "USDC", name: "USD Coin" },
+  { chainId: 8453, id: "cNGN", label: "cNGN", name: "Compliant Naira" },
+  { chainId: 42_220, id: "KESm", label: "KESm", name: "Kenyan Shilling" },
 ];
+const CHAIN_LABELS: Record<number, string> = {
+  8453: "Base",
+  42220: "Celo",
+};
+const TOKEN_ADDRESS_LABEL: Record<TokenOption["id"], string> = {
+  cNGN: "0xC930...62D3",
+  KESm: "0x456a...B0d0",
+  USDC: "0x8335...2913",
+  USDT: "0x4806...3D5e",
+};
 
 function formatMaturityDateLabel(maturitySeconds: number) {
   // Match the screenshot style (e.g. "31 Dec 2021"), but always in UTC.
@@ -532,7 +541,7 @@ function getLendValidationContext(params: {
     return { error: "Enter an amount and select a maturity." };
   }
   if (params.tokenId !== "KESm") {
-    return { error: "Lending USDT is not supported yet." };
+    return { error: "Lending this asset is not supported yet." };
   }
   if (params.baseDecimals === null || params.baseToken === null) {
     return { error: "Pool data not ready." };
@@ -678,13 +687,155 @@ function computeRedeemableAtMaturity(params: {
   }
 }
 
-function TokenIcon({ tokenId }: { tokenId: TokenOption["id"] }) {
+function TokenIcon({ chainId, tokenId }: { chainId: number; tokenId: TokenOption["id"] }) {
   return (
-    <span className="inline-flex rounded-full bg-gray-200 p-0.5">
-      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-white shadow-sm">
-        <Image alt={`${tokenId} token icon`} height={20} src={TOKEN_ICON_SRC[tokenId]} width={20} />
+    <span className="relative inline-flex h-8 w-8 shrink-0 items-center justify-center">
+      <Image
+        alt={`${tokenId} token icon`}
+        className="h-8 w-8 rounded-full"
+        height={32}
+        src={TOKEN_ICON_SRC[tokenId]}
+        width={32}
+      />
+      <span className="-bottom-1 -right-1 absolute inline-flex h-4 w-4 items-center justify-center rounded-full border border-white bg-white shadow-sm">
+        <ChainIcon chainId={chainId} className="h-3 w-3" />
       </span>
     </span>
+  );
+}
+
+function getChainLabel(chainId: number) {
+  return CHAIN_LABELS[chainId] ?? `Chain ${chainId}`;
+}
+
+function ChainIcon({ chainId, className }: { chainId: number; className?: string }) {
+  if (chainId === 42_220) {
+    return (
+      <Image
+        alt="Celo"
+        className={cn("h-3 w-3", className)}
+        height={12}
+        src="/assets/celo.svg"
+        width={12}
+      />
+    );
+  }
+
+  if (chainId === 8453) {
+    return (
+      <Image
+        alt="Base"
+        className={cn("h-3 w-3", className)}
+        height={12}
+        src="/assets/base.svg"
+        width={12}
+      />
+    );
+  }
+
+  return (
+    <span
+      className={cn(
+        "inline-flex h-3 w-3 items-center justify-center rounded-full bg-blue-100 font-semibold text-[8px] text-blue-700",
+        className
+      )}
+    >
+      B
+    </span>
+  );
+}
+
+function LendMaturityGrid(props: {
+  tokenLabel: string;
+  selectedMaturityId: string;
+  onSelectMaturity: (id: string) => void;
+  options: MaturityOption[];
+}) {
+  const left = props.options[0];
+  const right = props.options[1];
+  const wide = props.options[2];
+
+  function renderOption(option: MaturityOption, wideLayout: boolean) {
+    const isSelected = option.id === props.selectedMaturityId;
+    const isDisabled = Boolean(option.disabled) || option.id === "loading" || option.id === "error";
+    const dateLine = option.disabledReason
+      ? `${option.dateLabel} · ${option.disabledReason}`
+      : option.dateLabel;
+
+    if (wideLayout) {
+      const backgroundClass = isSelected ? "border-black bg-neutral-50" : "bg-white";
+      const interactionClass = isDisabled ? "opacity-60" : "hover:bg-numo-pill/60";
+      return (
+        <button
+          className={cn(
+            "col-span-2 flex items-center gap-4 rounded-2xl border border-numo-border px-5 py-4 text-left shadow-sm transition",
+            backgroundClass,
+            interactionClass
+          )}
+          disabled={isDisabled}
+          onClick={() => props.onSelectMaturity(option.id)}
+          type="button"
+        >
+          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-gray-100 shadow-sm">
+            <Waves className="h-6 w-6 text-black" />
+          </span>
+          <div className="min-w-0">
+            <div className="font-semibold text-base text-black">
+              {option.aprText} <span className="font-medium text-gray-600">APR</span>
+            </div>
+            <div className="mt-1 text-gray-500 text-sm">{dateLine}</div>
+          </div>
+        </button>
+      );
+    }
+
+    return (
+      <button
+        className={cn(
+          "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
+          isSelected ? "border-black ring-1 ring-black/10" : "",
+          isDisabled ? "opacity-60" : "hover:bg-numo-pill/60"
+        )}
+        disabled={isDisabled}
+        onClick={() => props.onSelectMaturity(option.id)}
+        type="button"
+      >
+        <span
+          className={cn(
+            "flex h-10 w-10 items-center justify-center rounded-full",
+            accentClasses(option.accent)
+          )}
+        >
+          <Waves className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <div className="font-semibold text-black text-sm">
+            {option.aprText} <span className="font-medium text-gray-600">APR</span>
+          </div>
+          <div className="mt-1 text-gray-500 text-xs">{dateLine}</div>
+        </div>
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-10">
+      <div className="text-gray-500 text-xs">Available {props.tokenLabel}-based maturity dates</div>
+
+      <div className="mt-4 grid grid-cols-2 gap-4">
+        {props.options.length === 0 ? (
+          <div className="col-span-2 rounded-2xl border border-numo-border bg-white px-4 py-4 text-gray-500 text-sm shadow-sm">
+            No maturity dates available for {props.tokenLabel} yet.
+          </div>
+        ) : (
+          <>
+            {left ? renderOption(left, false) : <div />}
+            {right ? renderOption(right, false) : <div />}
+            {wide ? renderOption(wide, true) : null}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -700,6 +851,7 @@ function LendFormView(props: {
   selectedMaturityId: string;
   selectedToken: TokenOption;
   token: TokenOption["id"];
+  tokenOptions: TokenOption[];
 }) {
   const [tokenMenuOpen, setTokenMenuOpen] = useState(false);
   const tokenMenuRef = useRef<HTMLDivElement | null>(null);
@@ -721,7 +873,7 @@ function LendFormView(props: {
         <div className="relative rounded-3xl border border-numo-border bg-white/92 p-8 shadow-xl backdrop-blur">
           <header>
             <h2 className="font-semibold text-3xl text-black">Lend</h2>
-            <p className="mt-1 text-gray-500 text-sm">Lend stablecoins for predictable returns</p>
+            <p className="mt-1 text-gray-500 text-sm">Lend stablecoins at a fixed rate</p>
           </header>
 
           <div className="mt-8 flex items-center gap-3">
@@ -731,7 +883,7 @@ function LendFormView(props: {
               </label>
               <input
                 className={cn(
-                  "h-12 w-full rounded-2xl border border-gray-200 bg-white px-4 pr-14 text-black shadow-sm outline-none",
+                  "h-12 w-full rounded-2xl border border-gray-200 bg-white px-4 text-black shadow-sm outline-none",
                   "placeholder:text-gray-400 focus:border-black focus:ring-1 focus:ring-black"
                 )}
                 id="lend-amount"
@@ -740,13 +892,6 @@ function LendFormView(props: {
                 placeholder="Enter amount"
                 value={props.amount}
               />
-              <button
-                className="-translate-y-1/2 absolute top-1/2 right-3 rounded-full bg-gray-100 px-2 py-1 font-semibold text-black text-xs transition hover:bg-gray-200"
-                onClick={() => props.onAmountChange("0")}
-                type="button"
-              >
-                Max
-              </button>
             </div>
 
             <div className="relative" ref={tokenMenuRef}>
@@ -754,15 +899,25 @@ function LendFormView(props: {
                 aria-expanded={tokenMenuOpen}
                 aria-haspopup="menu"
                 className={cn(
-                  "flex h-12 w-44 items-center justify-between gap-3 rounded-2xl border border-gray-200 bg-white px-3 text-black shadow-sm",
+                  "flex h-12 w-56 items-center justify-between gap-3 rounded-full border border-numo-ink bg-white px-3 text-numo-ink shadow-sm",
                   "transition hover:bg-numo-pill/50"
                 )}
                 onClick={() => setTokenMenuOpen((value) => !value)}
                 type="button"
               >
                 <span className="flex items-center gap-3">
-                  <TokenIcon tokenId={props.selectedToken.id} />
-                  <span className="font-semibold text-sm">{props.selectedToken.label}</span>
+                  <TokenIcon
+                    chainId={props.selectedToken.chainId}
+                    tokenId={props.selectedToken.id}
+                  />
+                  <span className="flex items-center gap-1 font-semibold text-sm">
+                    <span>{props.selectedToken.label}</span>
+                    <span className="text-numo-muted">·</span>
+                    <ChainIcon chainId={props.selectedToken.chainId} />
+                    <span className="text-numo-muted">
+                      {getChainLabel(props.selectedToken.chainId)}
+                    </span>
+                  </span>
                 </span>
                 <ChevronDown
                   className={cn(
@@ -773,11 +928,11 @@ function LendFormView(props: {
               </button>
 
               {tokenMenuOpen ? (
-                <div className="absolute right-0 z-10 mt-3 w-80 rounded-3xl border border-numo-border bg-white p-3 shadow-xl">
+                <div className="absolute left-0 z-10 mt-3 w-80 rounded-3xl border border-numo-border bg-white p-3 shadow-xl">
                   <div className="px-3 py-2 font-semibold text-numo-muted text-xs tracking-wide">
                     SELECT STABLECOIN
                   </div>
-                  {TOKENS.map((option) => {
+                  {props.tokenOptions.map((option) => {
                     const isSelected = option.id === props.token;
                     return (
                       <button
@@ -793,12 +948,19 @@ function LendFormView(props: {
                         type="button"
                       >
                         <span className="flex items-center gap-3">
-                          <TokenIcon tokenId={option.id} />
-                          <span className="font-semibold text-numo-ink text-sm">
-                            {option.label}
+                          <TokenIcon chainId={option.chainId} tokenId={option.id} />
+                          <span className="flex flex-col">
+                            <span className="font-semibold text-lg text-numo-ink leading-tight">
+                              {option.name}
+                            </span>
+                            <span className="mt-0.5 flex items-center gap-3 text-numo-muted text-sm">
+                              <span>{option.label}</span>
+                              <span className="text-gray-400">
+                                {TOKEN_ADDRESS_LABEL[option.id]}
+                              </span>
+                            </span>
                           </span>
                         </span>
-                        {isSelected ? <Check className="h-5 w-5 text-black" /> : null}
                       </button>
                     );
                   })}
@@ -807,57 +969,12 @@ function LendFormView(props: {
             </div>
           </div>
 
-          <div className="mt-10">
-            <div className="text-gray-500 text-xs">
-              Select a {props.selectedToken.label}-based maturity date
-            </div>
-
-            <div className="mt-4 grid grid-cols-2 gap-4">
-              {props.maturityOptions.length === 0 ? (
-                <div className="col-span-2 rounded-2xl border border-numo-border bg-white px-4 py-4 text-gray-500 text-sm shadow-sm">
-                  No maturity dates available for {props.selectedToken.label} yet.
-                </div>
-              ) : null}
-              {props.maturityOptions.map((option) => {
-                const isSelected = option.id === props.selectedMaturityId;
-                const accent = accentClasses(option.accent);
-                const isDisabled =
-                  Boolean(option.disabled) || option.id === "loading" || option.id === "error";
-                return (
-                  <button
-                    className={cn(
-                      "flex items-center gap-3 rounded-2xl border border-numo-border bg-white px-4 py-4 text-left shadow-sm transition",
-                      props.maturityOptions.length === 1 ? "col-span-2" : "col-span-1",
-                      isSelected ? "border-black ring-1 ring-black/10" : "",
-                      isDisabled ? "opacity-60" : "hover:bg-numo-pill/60"
-                    )}
-                    disabled={isDisabled}
-                    key={option.id}
-                    onClick={() => props.onMaturitySelect(option.id)}
-                    type="button"
-                  >
-                    <span
-                      className={cn(
-                        "flex h-10 w-10 items-center justify-center rounded-full",
-                        accent
-                      )}
-                    >
-                      <Waves className="h-5 w-5" />
-                    </span>
-                    <div className="min-w-0">
-                      <div className="font-semibold text-black text-sm">
-                        {option.aprText} <span className="font-medium text-gray-600">APR</span>
-                      </div>
-                      <div className="mt-1 text-gray-500 text-xs">
-                        {option.dateLabel}
-                        {option.disabledReason ? ` · ${option.disabledReason}` : ""}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+          <LendMaturityGrid
+            onSelectMaturity={props.onMaturitySelect}
+            options={props.maturityOptions}
+            selectedMaturityId={props.selectedMaturityId}
+            tokenLabel={props.selectedToken.label}
+          />
 
           <button
             className={cn(
@@ -1202,7 +1319,7 @@ function LendConfirmStep(props: {
   );
 }
 
-export function LendFixedRate({ className }: LendFixedRateProps) {
+export function LendFixedRate({ className, selectedChain }: LendFixedRateProps) {
   const userAddress = usePrivyAddress();
   const {
     baseDecimals,
@@ -1218,6 +1335,16 @@ export function LendFixedRate({ className }: LendFixedRateProps) {
   const { isCelo, walletClient } = usePrivyWalletClient();
   const [amount, setAmount] = useState("");
   const [token, setToken] = useState<TokenOption["id"]>("KESm");
+  const filteredTokens = useMemo(
+    () =>
+      TOKENS.filter((option) => {
+        if (selectedChain === null) {
+          return true;
+        }
+        return option.chainId === selectedChain;
+      }),
+    [selectedChain]
+  );
   const maturityOptions = useLendMaturityOptions(token);
   const [step, setStep] = useState<LendStep>("form");
   const [selectedMaturityId, setSelectedMaturityId] = useState<string>(
@@ -1245,7 +1372,20 @@ export function LendFixedRate({ className }: LendFixedRateProps) {
     selectedMaturity?.id !== "loading" &&
     selectedMaturity?.id !== "error" &&
     !selectedMaturity?.disabled;
-  const selectedToken = TOKENS.find((t) => t.id === token) ?? TOKENS[0];
+  useEffect(() => {
+    if (filteredTokens.length === 0) {
+      return;
+    }
+    if (filteredTokens.some((option) => option.id === token)) {
+      return;
+    }
+    setToken(filteredTokens[0].id);
+  }, [filteredTokens, token]);
+
+  const selectedToken =
+    filteredTokens.find((selectedOption) => selectedOption.id === token) ??
+    filteredTokens[0] ??
+    TOKENS[0];
 
   const redeemableAtMaturity = computeRedeemableAtMaturity({
     amount,
@@ -1347,6 +1487,7 @@ export function LendFixedRate({ className }: LendFixedRateProps) {
       selectedMaturityId={selectedMaturityId}
       selectedToken={selectedToken}
       token={token}
+      tokenOptions={filteredTokens}
     />
   );
 }
