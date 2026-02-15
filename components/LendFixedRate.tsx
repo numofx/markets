@@ -665,6 +665,7 @@ async function handleLendClick(params: {
       walletClient: params.walletClient,
     });
     if ("error" in result) {
+      params.setStep("confirm");
       params.setTxError(result.error);
       params.setTxPhase("error");
       return;
@@ -694,11 +695,12 @@ async function handleLendClick(params: {
         });
         params.onConfirmedFyReceived(received);
 
+        // Some RPCs can return inconsistent results for historical `balanceOf` reads on L2s.
+        // Read the latest balance; the delta is already computed from the receipt logs.
         const nextFyBal = await params.publicClient.readContract({
           abi: erc20Abi,
           address: params.fyToken,
           args: [result.context.account],
-          blockNumber: receipt.swapBlockNumber,
           functionName: "balanceOf",
         });
         params.onConfirmedFyBalance(nextFyBal);
@@ -708,6 +710,7 @@ async function handleLendClick(params: {
     }
     params.setTxPhase("done");
   } catch (caught) {
+    params.setStep("confirm");
     params.setTxError(formatTxError(caught));
     params.setTxPhase("error");
   }
@@ -1351,14 +1354,30 @@ function getTxStatusLabel(phase: LendTxPhase) {
   return "Idle";
 }
 
+function getExplorerForChainId(chainId: number) {
+  if (chainId === base.id) {
+    return { name: "Basescan", txBaseUrl: "https://basescan.org/tx" };
+  }
+  if (chainId === 42_161) {
+    return { name: "Arbiscan", txBaseUrl: "https://arbiscan.io/tx" };
+  }
+  if (chainId === celo.id) {
+    return { name: "Celoscan", txBaseUrl: "https://celoscan.io/tx" };
+  }
+  return null;
+}
+
 function LendTransactionConfirmation(props: {
   amount: string;
   className?: string;
+  chainId: number;
+  tokenId: TokenOption["id"];
   onBack: () => void;
   onReset: () => void;
   positionLabel: string | null;
   positionDeltaLabel: string | null;
   positionMaturityLabel: string;
+  positionWarning?: string | null;
   phase: LendTxPhase;
   swapTxHash: Hex | null;
   tokenLabel: string;
@@ -1428,11 +1447,13 @@ function LendTransactionConfirmation(props: {
                     {props.swapTxHash ? (
                       <a
                         className="mt-2 inline-flex items-center gap-1 text-numo-muted text-xs underline-offset-2 hover:text-numo-ink hover:underline"
-                        href={`https://celoscan.io/tx/${props.swapTxHash}`}
+                        href={`${getExplorerForChainId(props.chainId)?.txBaseUrl ?? "https://celoscan.io/tx"}/${props.swapTxHash}`}
                         rel="noreferrer"
                         target="_blank"
                       >
-                        View on Celoscan <ExternalLink className="h-3 w-3" />
+                        View on{" "}
+                        {getExplorerForChainId(props.chainId)?.name ?? "Explorer"}{" "}
+                        <ExternalLink className="h-3 w-3" />
                       </a>
                     ) : null}
                   </div>
@@ -1443,15 +1464,7 @@ function LendTransactionConfirmation(props: {
               <div className="mt-2 rounded-2xl border border-numo-border bg-white px-4 py-4 shadow-sm">
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
-                    <span className="flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border border-numo-border bg-numo-accent/10">
-                      <Image
-                        alt={props.tokenLabel}
-                        className="h-full w-full object-cover"
-                        height={28}
-                        src="/assets/KESm (Mento Mento KES).svg"
-                        width={28}
-                      />
-                    </span>
+                    <TokenIcon chainId={props.chainId} tokenId={props.tokenId} />
                     <div className="font-semibold text-numo-ink text-sm">
                       {props.positionMaturityLabel}
                     </div>
@@ -1463,6 +1476,9 @@ function LendTransactionConfirmation(props: {
                       <span className="ml-2 font-medium text-emerald-700">
                         (+{props.positionDeltaLabel})
                       </span>
+                    ) : null}
+                    {props.positionWarning ? (
+                      <div className="mt-1 text-[11px] text-numo-muted">{props.positionWarning}</div>
                     ) : null}
                   </div>
                 </div>
@@ -1516,6 +1532,8 @@ function LendTransactionConfirmation(props: {
 
 function LendConfirmStep(props: {
   amount: string;
+  chainId: number;
+  tokenId: TokenOption["id"];
   className?: string;
   confirmedFyBalance: bigint | null;
   confirmedFyReceived: bigint | null;
@@ -1531,8 +1549,21 @@ function LendConfirmStep(props: {
   userFyBal: bigint | null | undefined;
 }) {
   const fyBalanceForUi = props.confirmedFyBalance ?? props.userFyBal ?? null;
-  const positionLabel =
+
+  const positionWarning =
     fyBalanceForUi !== null && props.fyDecimals !== null
+      ? (() => {
+          // If decimals are wrong for a given token/network, balances can show as absurd.
+          // Avoid displaying nonsense; user can always verify on the explorer link.
+          const maxReasonable = 1_000_000_000_000n * 10n ** BigInt(props.fyDecimals);
+          return fyBalanceForUi > maxReasonable
+            ? "Wallet balance looks unusually large; verify on the explorer."
+            : null;
+        })()
+      : null;
+
+  const positionLabel =
+    fyBalanceForUi !== null && props.fyDecimals !== null && !positionWarning
       ? `${formatUnitsTruncated(fyBalanceForUi, props.fyDecimals, 2)} ${props.fySymbol ?? "fyToken"}`
       : null;
   const positionDeltaLabel =
@@ -1543,6 +1574,8 @@ function LendConfirmStep(props: {
   return (
     <LendTransactionConfirmation
       amount={props.amount}
+      chainId={props.chainId}
+      tokenId={props.tokenId}
       className={props.className}
       onBack={props.onBack}
       onReset={props.onReset}
@@ -1550,6 +1583,7 @@ function LendConfirmStep(props: {
       positionDeltaLabel={positionDeltaLabel}
       positionLabel={positionLabel}
       positionMaturityLabel={props.positionMaturityLabel}
+      positionWarning={positionWarning}
       swapTxHash={props.swapTxHash}
       tokenLabel={props.tokenLabel}
       txError={props.txError}
@@ -1695,9 +1729,12 @@ export function LendFixedRate({ className, selectedChain }: LendFixedRateProps) 
   };
 
   if (step === "confirm") {
+    const chainId = getLendPoolConfig(token).chainId;
     return (
       <LendConfirmStep
         amount={amount}
+        chainId={chainId}
+        tokenId={token}
         className={className}
         confirmedFyBalance={confirmedFyBalance}
         confirmedFyReceived={confirmedFyReceived}
