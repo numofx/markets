@@ -5,7 +5,7 @@ import { useWallets } from "@privy-io/react-auth";
 import { useEffect, useState } from "react";
 import type { Chain, WalletClient } from "viem";
 import { createWalletClient, custom } from "viem";
-import { celo } from "viem/chains";
+import { base, celo } from "viem/chains";
 import { useSoftWalletDisconnect } from "@/lib/useSoftWalletDisconnect";
 
 type UsePrivyWalletClientResult = {
@@ -13,6 +13,7 @@ type UsePrivyWalletClientResult = {
   wallet: ConnectedWallet | null;
   chainId: number | null;
   isCelo: boolean;
+  isBase: boolean;
   provider: EIP1193Provider | null;
   walletClient: WalletClient | null;
   error: Error | null;
@@ -34,6 +35,9 @@ function resolveChain(chainId: string | undefined): Chain | undefined {
   const numericId = parseChainId(chainId);
   if (numericId === celo.id) {
     return celo;
+  }
+  if (numericId === base.id) {
+    return base;
   }
   return undefined;
 }
@@ -60,6 +64,7 @@ export function usePrivyWalletClient(): UsePrivyWalletClientResult {
 
   const chainId = parseChainId(wallet?.chainId);
   const isCelo = chainId === celo.id;
+  const isBase = chainId === base.id;
 
   useEffect(() => {
     if (softDisconnected) {
@@ -113,6 +118,7 @@ export function usePrivyWalletClient(): UsePrivyWalletClientResult {
   return {
     chainId,
     error,
+    isBase,
     isCelo,
     provider,
     ready,

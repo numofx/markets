@@ -5,6 +5,7 @@ export const poolAbi = parseAbi([
   "error NotEnoughFYTokenIn(uint256 fYTokensAvailable, uint256 fYTokensNeeded)",
   "error SlippageDuringMint(uint256 newRatio, uint256 minRatio, uint256 maxRatio)",
   "event Liquidity(uint32 maturity, address indexed from, address indexed to, address indexed fyTokenTo, int256 base, int256 fyTokens, int256 poolTokens)",
+  "function totalSupply() view returns (uint256)",
   "function baseToken() view returns (address)",
   "function fyToken() view returns (address)",
   "function baseDecimals() view returns (uint256)",
