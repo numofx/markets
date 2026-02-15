@@ -24,9 +24,13 @@ export function formatAprPercent(aprWad: bigint | null): string {
   if (!aprWad || aprWad <= 0n) {
     return "—";
   }
-  const percent = Number(aprWad) / 1e16;
-  if (!Number.isFinite(percent)) {
-    return "—";
-  }
-  return `${percent.toFixed(2)}%`;
+  // Truncate (not round) to 2 decimal places in percentage space.
+  // aprWad is APR in WAD (1e18), so:
+  // percentHundredths = floor(aprWad * 10000 / 1e18)
+  const percentHundredths = (aprWad * 10_000n) / WAD;
+  const integerPart = percentHundredths / 100n;
+  const fractionalPart = percentHundredths % 100n;
+  const groupedInteger = integerPart.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const paddedFraction = fractionalPart.toString().padStart(2, "0");
+  return `${groupedInteger}.${paddedFraction}%`;
 }

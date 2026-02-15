@@ -1,27 +1,45 @@
 import type { Address } from "viem";
-import { poolAbi } from "@/lib/abi/pool";
-import { publicClient } from "@/lib/celoClients";
 import { getRevertSelector } from "@/lib/get-revert-selector";
-import { readBorrowPoolState } from "@/src/borrow-actions";
+import { previewSellFyToken, readBorrowPoolStateForMarket } from "@/src/borrow-actions";
 import { CELO_YIELD_POOL } from "@/src/poolInfo";
 
 const U128_MAX = BigInt("340282366920938463463374607431768211455");
 
-function previewSellFyToken(fyIn: bigint) {
-  return publicClient.readContract({
-    abi: poolAbi,
-    address: CELO_YIELD_POOL.poolAddress as Address,
-    args: [fyIn],
-    functionName: "sellFYTokenPreview",
-  });
+type QuoteMarketParams = {
+  chainId: 8453 | 42_220;
+  poolAddress: Address;
+};
+
+const DEFAULT_MARKET = {
+  chainId: 42_220,
+  poolAddress: CELO_YIELD_POOL.poolAddress as Address,
+} as const satisfies QuoteMarketParams;
+
+function clampU128(value: bigint) {
+  if (value < 0n) {
+    return 0n;
+  }
+  return value > U128_MAX ? U128_MAX : value;
 }
 
-async function tryPreviewSellFyToken(fyIn: bigint) {
-  try {
-    return await previewSellFyToken(fyIn);
-  } catch {
-    return null;
+// Some pool previews revert for oversized inputs. Retry with progressively smaller sizes.
+async function tryPreviewSellFyToken(fyIn: bigint, market: QuoteMarketParams) {
+  let size = clampU128(fyIn);
+  for (let i = 0; i < 6; i += 1) {
+    if (size <= 0n) {
+      return null;
+    }
+    try {
+      return await previewSellFyToken({
+        chainId: market.chainId,
+        fyIn: size,
+        poolAddress: market.poolAddress,
+      });
+    } catch {
+      size /= 2n;
+    }
   }
+  return null;
 }
 
 export type BorrowQuote = {
@@ -36,13 +54,6 @@ export type BorrowQuote = {
     | "UNKNOWN";
   detail?: string;
 };
-
-function clampU128(value: bigint) {
-  if (value < 0n) {
-    return 0n;
-  }
-  return value > U128_MAX ? U128_MAX : value;
-}
 
 function estimateFyIn(desiredBaseOut: bigint, poolBaseBalance: bigint, poolFyBalance: bigint) {
   if (desiredBaseOut <= 0n || poolBaseBalance <= 0n || poolFyBalance <= 0n) {
@@ -61,8 +72,11 @@ function isNegativeInterestRatesNotAllowed(caught: unknown) {
   return message.includes("NegativeInterestRatesNotAllowed");
 }
 
-async function readPoolState() {
-  const state = await readBorrowPoolState();
+async function readPoolState(market: QuoteMarketParams) {
+  const state = await readBorrowPoolStateForMarket({
+    chainId: market.chainId,
+    poolAddress: market.poolAddress,
+  });
   return {
     baseBalance: state.baseLive,
     baseCached: state.baseCached,
@@ -78,12 +92,16 @@ function quoteError(reason: BorrowQuote["reason"], detail: string): BorrowQuote 
   return { detail, expectedKesOut: 0n, fyToBorrow: 0n, reason };
 }
 
-async function findUpperBound(desiredKesOut: bigint, initialGuess: bigint) {
+async function findUpperBound(
+  desiredKesOut: bigint,
+  initialGuess: bigint,
+  market: QuoteMarketParams
+) {
   let low = 0n;
   let high = clampU128(initialGuess <= 0n ? 1n : initialGuess);
 
   for (let i = 0; i < 32; i += 1) {
-    const out = await tryPreviewSellFyToken(high);
+    const out = await tryPreviewSellFyToken(high, market);
 
     // "Rate overflow" and similar math errors tend to happen for very large fyIn.
     // Treat reverts as "too high" and shrink.
@@ -109,7 +127,12 @@ async function findUpperBound(desiredKesOut: bigint, initialGuess: bigint) {
   return null;
 }
 
-async function findMinFyForKes(desiredKesOut: bigint, low: bigint, high: bigint) {
+async function findMinFyForKes(
+  desiredKesOut: bigint,
+  low: bigint,
+  high: bigint,
+  market: QuoteMarketParams
+) {
   let left = clampU128(low);
   let right = clampU128(high);
 
@@ -118,7 +141,7 @@ async function findMinFyForKes(desiredKesOut: bigint, low: bigint, high: bigint)
     if (mid === left) {
       break;
     }
-    const out = await tryPreviewSellFyToken(mid);
+    const out = await tryPreviewSellFyToken(mid, market);
     if (out === null) {
       right = mid;
       continue;
@@ -134,13 +157,16 @@ async function findMinFyForKes(desiredKesOut: bigint, low: bigint, high: bigint)
 }
 
 // Finds the minimum fyIn such that sellFYTokenPreview(fyIn) >= desiredKesOut.
-export async function quoteFyForKes(desiredKesOut: bigint): Promise<BorrowQuote> {
+export async function quoteFyForKes(
+  desiredKesOut: bigint,
+  market: QuoteMarketParams = DEFAULT_MARKET
+): Promise<BorrowQuote> {
   if (desiredKesOut <= 0n) {
     return quoteError("UNKNOWN", "Desired output must be > 0.");
   }
 
   // If the user asks for more base out than the pool can possibly return, quotes will revert or never reach it.
-  const state = await readPoolState();
+  const state = await readPoolState(market);
   if (state.cachedGtLive) {
     return quoteError(
       "CACHE_GT_LIVE",
@@ -161,7 +187,7 @@ export async function quoteFyForKes(desiredKesOut: bigint): Promise<BorrowQuote>
   }
 
   const guess = estimateFyIn(desiredKesOut, state.baseBalance, state.fyBalance) ?? desiredKesOut;
-  const bounds = await findUpperBound(desiredKesOut, guess);
+  const bounds = await findUpperBound(desiredKesOut, guess, market);
   if (!bounds) {
     return quoteError(
       "PREVIEW_REVERT",
@@ -169,10 +195,14 @@ export async function quoteFyForKes(desiredKesOut: bigint): Promise<BorrowQuote>
     );
   }
 
-  const fyToBorrow = await findMinFyForKes(desiredKesOut, bounds.low, bounds.high);
+  const fyToBorrow = await findMinFyForKes(desiredKesOut, bounds.low, bounds.high, market);
   let expectedKesOut: bigint;
   try {
-    expectedKesOut = await previewSellFyToken(fyToBorrow);
+    expectedKesOut = await previewSellFyToken({
+      chainId: market.chainId,
+      fyIn: fyToBorrow,
+      poolAddress: market.poolAddress,
+    });
   } catch (caught) {
     return quoteError(
       isNegativeInterestRatesNotAllowed(caught)
