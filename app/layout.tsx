@@ -24,7 +24,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
   const title = "Numo";
   const description = t("description");
-  const openGraphDescription = "Borrow stablecoins at fixed rates.";
+  const openGraphDescription = "Money market for FX stablecoins";
 
   return {
     alternates: {
