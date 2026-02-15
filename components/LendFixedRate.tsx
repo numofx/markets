@@ -157,6 +157,62 @@ function toWad(value: bigint, decimals: number) {
   return value / 10n ** BigInt(decimals - 18);
 }
 
+function convertDecimals(value: bigint, fromDecimals: number, toDecimals: number) {
+  if (fromDecimals === toDecimals) {
+    return value;
+  }
+  if (fromDecimals < toDecimals) {
+    return value * 10n ** BigInt(toDecimals - fromDecimals);
+  }
+  return value / 10n ** BigInt(fromDecimals - toDecimals);
+}
+
+async function fetchLendReviewQuote(params: {
+  tokenId: TokenOption["id"];
+  amount: string;
+  baseDecimals: number;
+  fyDecimals: number;
+  maturitySeconds: number;
+  tokenLabel: string;
+}): Promise<{ redeemableAtMaturity: string | null; yieldLabel: string }> {
+  let amountInBase: bigint;
+  try {
+    amountInBase = parseUnits(params.amount, params.baseDecimals);
+  } catch {
+    return { redeemableAtMaturity: null, yieldLabel: "—" };
+  }
+
+  if (amountInBase <= 0n || amountInBase > U128_MAX) {
+    return { redeemableAtMaturity: null, yieldLabel: "—" };
+  }
+
+  const { client, poolAddress } = getLendPoolConfig(params.tokenId);
+  const fyOut = await client.readContract({
+    abi: poolAbi,
+    address: poolAddress,
+    args: [amountInBase],
+    functionName: "sellBasePreview",
+  });
+
+  const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+  const secondsToMaturity = BigInt(params.maturitySeconds) - nowSeconds;
+  if (secondsToMaturity <= 0n || fyOut <= 0n) {
+    return { redeemableAtMaturity: null, yieldLabel: "—" };
+  }
+
+  const pWad = (toWad(amountInBase, params.baseDecimals) * WAD) / toWad(fyOut, params.fyDecimals);
+  const aprWad = aprFromPriceWad(pWad, secondsToMaturity);
+
+  const redeemableBaseRaw = convertDecimals(fyOut, params.fyDecimals, params.baseDecimals);
+  const redeemableAtMaturity = `${formatUnitsTruncated(
+    redeemableBaseRaw,
+    params.baseDecimals,
+    2
+  )} ${params.tokenLabel}`;
+
+  return { redeemableAtMaturity, yieldLabel: formatAprPercent(aprWad) };
+}
+
 async function fetchLendAprText(params: {
   previewSellBase: (baseIn: bigint) => Promise<bigint>;
   baseDecimals: number;
@@ -858,53 +914,6 @@ async function executeLendBaseToFy(params: {
   };
 }
 
-function computeRedeemableAtMaturity(params: {
-  amount: string;
-  baseDecimals: number | null;
-  poolBaseBalance: bigint | null;
-  poolFyBalance: bigint | null;
-  tokenId: TokenOption["id"];
-  tokenLabel: string;
-  maturityOption: MaturityOption | undefined;
-}) {
-  if (params.tokenId !== "KESm" && params.tokenId !== "cNGN") {
-    return null;
-  }
-  if (
-    !params.maturityOption ||
-    params.maturityOption.id === "loading" ||
-    params.maturityOption.id === "error"
-  ) {
-    return null;
-  }
-  if (
-    params.baseDecimals === null ||
-    params.poolBaseBalance === null ||
-    params.poolFyBalance === null ||
-    params.poolFyBalance <= 0n
-  ) {
-    return null;
-  }
-
-  const numeric = Number.parseFloat(params.amount);
-  if (!params.amount || Number.isNaN(numeric) || numeric <= 0) {
-    return null;
-  }
-
-  try {
-    // Price in base per fy (WAD). Redeemable base at maturity is base / price.
-    const pWad = (params.poolBaseBalance * WAD) / params.poolFyBalance;
-    if (pWad <= 0n) {
-      return null;
-    }
-    const amountBase = parseUnits(params.amount, params.baseDecimals);
-    const redeemableBase = (amountBase * WAD) / pWad;
-    return `${formatUnitsTruncated(redeemableBase, params.baseDecimals, 2)} ${params.tokenLabel}`;
-  } catch {
-    return null;
-  }
-}
-
 function TokenIcon({ chainId, tokenId }: { chainId: number; tokenId: TokenOption["id"] }) {
   return (
     <span className="relative inline-flex h-8 w-8 shrink-0 items-center justify-center">
@@ -1559,8 +1568,7 @@ export function LendFixedRate({ className, selectedChain }: LendFixedRateProps) 
     fyToken,
     fyDecimals,
     fySymbol,
-    poolBaseBalance,
-    poolFyBalance,
+    maturity,
     refetch,
     userFyBal,
   } = useLendPoolReads({ tokenId: token, userAddress });
@@ -1616,15 +1624,47 @@ export function LendFixedRate({ className, selectedChain }: LendFixedRateProps) 
     filteredTokens[0] ??
     TOKENS[0];
 
-  const redeemableAtMaturity = computeRedeemableAtMaturity({
-    amount,
-    baseDecimals,
-    maturityOption: selectedMaturity,
-    poolBaseBalance,
-    poolFyBalance,
-    tokenId: token,
-    tokenLabel: selectedToken.label,
-  });
+  const [reviewQuote, setReviewQuote] = useState<{
+    loading: boolean;
+    redeemableAtMaturity: string | null;
+    yieldLabel: string;
+  }>({ loading: false, redeemableAtMaturity: null, yieldLabel: "—" });
+
+  useEffect(() => {
+    if (step !== "review") {
+      return;
+    }
+    if (!canContinue || baseDecimals === null || fyDecimals === null || maturity === null) {
+      setReviewQuote({ loading: false, redeemableAtMaturity: null, yieldLabel: "—" });
+      return;
+    }
+
+    let cancelled = false;
+    setReviewQuote((prev) => ({ ...prev, loading: true }));
+
+    void fetchLendReviewQuote({
+      amount,
+      baseDecimals,
+      fyDecimals,
+      maturitySeconds: maturity,
+      tokenId: token,
+      tokenLabel: selectedToken.label,
+    })
+      .then((result) => {
+        if (!cancelled) {
+          setReviewQuote({ loading: false, ...result });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setReviewQuote({ loading: false, redeemableAtMaturity: null, yieldLabel: "—" });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [amount, baseDecimals, canContinue, fyDecimals, maturity, selectedToken.label, step, token]);
 
   const onLendConfirm = () => {
     const { chainId, client, poolAddress } = getLendPoolConfig(token);
@@ -1696,9 +1736,9 @@ export function LendFixedRate({ className, selectedChain }: LendFixedRateProps) 
         maturityLabel={selectedMaturity?.dateLabel ?? "—"}
         onBack={() => setStep("form")}
         onConfirm={onLendConfirm}
-        redeemableAtMaturity={redeemableAtMaturity}
+        redeemableAtMaturity={reviewQuote.loading ? null : reviewQuote.redeemableAtMaturity}
         tokenLabel={selectedToken.label}
-        yieldLabel={selectedMaturity?.aprText ?? "—"}
+        yieldLabel={reviewQuote.loading ? "—" : reviewQuote.yieldLabel}
       />
     );
   }
