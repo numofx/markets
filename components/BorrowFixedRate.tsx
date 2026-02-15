@@ -7,7 +7,8 @@ import type { Address, Hex, WalletClient } from "viem";
 import { formatUnits, parseUnits } from "viem";
 import { erc20Abi } from "@/lib/abi/erc20";
 import { poolAbi } from "@/lib/abi/pool";
-import { publicClient } from "@/lib/celoClients";
+import { publicClient as basePublicClient } from "@/lib/baseClients";
+import { publicClient as celoPublicClient } from "@/lib/celoClients";
 import { cn } from "@/lib/cn";
 import { getRevertSelector } from "@/lib/get-revert-selector";
 import { useBorrowVaultDiscovery } from "@/lib/useBorrowVaultDiscovery";
@@ -18,11 +19,11 @@ import { usePrivyAddress } from "@/lib/usePrivyAddress";
 import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
 import { aprFromPriceWad, formatAprPercent, WAD } from "@/src/apr";
 import {
-  approveUsdtJoin,
-  buildVault,
-  pour,
-  recoverBorrowPool,
-  sellFyKes,
+  approveTokenToSpender,
+  buildVaultForMarket,
+  pourForMarket,
+  recoverBorrowPoolForMarket,
+  sellFyTokenForMarket,
 } from "@/src/borrow-actions";
 import { BORROW_CONFIG } from "@/src/borrow-config";
 import { quoteFyForKes } from "@/src/borrow-quote";
@@ -52,13 +53,47 @@ type TokenOption = {
 };
 
 type CollateralOption = {
-  id: "USDT";
+  id: "USDT" | "aUSDC";
   chainId: number;
   label: string;
   subtitle: string;
 };
 
+type BorrowMarket = {
+  chainId: 8453 | 42_220;
+  collateralLabel: string;
+  collateralSubtitle: string;
+  collateralToken: Address;
+  collateralJoin: Address;
+  poolAddress: Address;
+  borrowLabel: string;
+  fyLabel: string;
+  ladle: Address;
+  cauldron: Address;
+  seriesId: Hex;
+  ilkId: Hex;
+};
+
+type AprDiagnostics = {
+  loading: boolean;
+  error: string | null;
+  poolBaseToken: Address | null;
+  poolFyToken: Address | null;
+  expectedBaseToken: Address;
+  expectedFyToken: Address;
+  baseDecimals: number | null;
+  fyDecimals: number | null;
+  baseBalance: bigint | null;
+  fyBalance: bigint | null;
+  previewBaseIn: bigint | null;
+  previewFyOut: bigint | null;
+  reservePWad: bigint | null;
+  previewPWad: bigint | null;
+  previewError: string | null;
+};
+
 const TOKEN_ICON_SRC = {
+  aUSDC: "/assets/usdc.svg",
   BRZ: "/assets/brz.svg",
   cNGN: "/assets/cngn.png",
   KESm: "/assets/KESm%20(Mento%20Kenyan%20Shilling).svg",
@@ -66,7 +101,7 @@ const TOKEN_ICON_SRC = {
   USDC: "/assets/usdc.svg",
   USDC_ARB: "/assets/usdc.svg",
   USDT: "/assets/usdt.svg",
-} as const satisfies Record<TokenOption["id"], string>;
+} as const satisfies Record<TokenOption["id"] | CollateralOption["id"], string>;
 
 type MaturityOption = {
   id: string;
@@ -104,7 +139,214 @@ const CHAIN_LABELS: Record<number, string> = {
 
 const COLLATERAL_OPTIONS: CollateralOption[] = [
   { chainId: 42_220, id: "USDT", label: "USDT", subtitle: "Tether USD" },
+  { chainId: 8453, id: "aUSDC", label: "aUSDC", subtitle: "Aave USDC" },
 ];
+
+function getPublicClient(chainId: BorrowMarket["chainId"]) {
+  if (chainId === 8453) {
+    return basePublicClient;
+  }
+  return celoPublicClient;
+}
+
+function getMarketForToken(token: TokenOption["id"]): BorrowMarket | null {
+  if (token === "KESm") {
+    return {
+      borrowLabel: "KESm",
+      cauldron: BORROW_CONFIG.core.cauldron as Address,
+      chainId: 42_220,
+      collateralJoin: BORROW_CONFIG.joins.usdt as Address,
+      collateralLabel: "USDT",
+      collateralSubtitle: "Tether USD",
+      collateralToken: BORROW_CONFIG.tokens.usdt as Address,
+      fyLabel: "fyKESm",
+      ilkId: BORROW_CONFIG.ilk.usdt as Hex,
+      ladle: BORROW_CONFIG.core.ladle as Address,
+      poolAddress: CELO_YIELD_POOL.poolAddress as Address,
+      seriesId: BORROW_CONFIG.seriesId.fyKesm as Hex,
+    };
+  }
+  if (token === "cNGN") {
+    return {
+      borrowLabel: "cNGN",
+      cauldron: BORROW_CONFIG.baseCngn.core.cauldron as Address,
+      chainId: 8453,
+      collateralJoin: BORROW_CONFIG.baseCngn.joins.aUsdc as Address,
+      collateralLabel: "aUSDC",
+      collateralSubtitle: "Aave USDC",
+      collateralToken: BORROW_CONFIG.tokens.aUsdc as Address,
+      fyLabel: "fycNGN",
+      ilkId: BORROW_CONFIG.baseCngn.ilk.aUsdc as Hex,
+      ladle: BORROW_CONFIG.baseCngn.core.ladle as Address,
+      poolAddress: BORROW_CONFIG.baseCngn.pool.address as Address,
+      seriesId: BORROW_CONFIG.baseCngn.seriesId.fycNgn as Hex,
+    };
+  }
+  return null;
+}
+
+function shortAddress(value: Address | null) {
+  if (!value) {
+    return "—";
+  }
+  return `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
+
+function renderMatch(actual: Address | null, expected: Address) {
+  if (!actual) {
+    return "—";
+  }
+  return actual.toLowerCase() === expected.toLowerCase() ? "yes" : "no";
+}
+
+function formatRatioWad(value: bigint | null) {
+  if (value === null) {
+    return "—";
+  }
+  return formatUnits(value, 18);
+}
+
+function formatRpcError(caught: unknown) {
+  const message = caught instanceof Error ? caught.message : String(caught ?? "");
+  // Viem errors often include the full request body; keep this human-sized.
+  if (message.includes("Status: 429") || message.includes("HTTP request failed. Status: 429")) {
+    return "RPC rate limited (HTTP 429). Set NEXT_PUBLIC_BASE_RPC_URL to a dedicated Base RPC.";
+  }
+  if (message.includes("HTTP request failed")) {
+    return "RPC request failed. Try again or switch RPC.";
+  }
+  return message || "Failed to load APR diagnostics.";
+}
+
+function useAprDiagnostics(
+  market: BorrowMarket | null,
+  token: TokenOption["id"],
+  enabled: boolean
+) {
+  const [state, setState] = useState<AprDiagnostics | null>(null);
+
+  useEffect(() => {
+    if (!(enabled && market) || (token !== "KESm" && token !== "cNGN")) {
+      setState(null);
+      return;
+    }
+
+    let cancelled = false;
+    setState({
+      baseBalance: null,
+      baseDecimals: null,
+      error: null,
+      expectedBaseToken:
+        token === "cNGN"
+          ? (BORROW_CONFIG.tokens.cNgn as Address)
+          : (BORROW_CONFIG.tokens.kesm as Address),
+      expectedFyToken:
+        token === "cNGN"
+          ? (BORROW_CONFIG.tokens.fycNgn as Address)
+          : (BORROW_CONFIG.tokens.fyKesm as Address),
+      fyBalance: null,
+      fyDecimals: null,
+      loading: true,
+      poolBaseToken: null,
+      poolFyToken: null,
+      previewBaseIn: null,
+      previewError: null,
+      previewFyOut: null,
+      previewPWad: null,
+      reservePWad: null,
+    });
+
+    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: diagnostics probe aggregates multiple onchain checks.
+    void (async () => {
+      try {
+        const client = getPublicClient(market.chainId);
+        const [poolBaseToken, poolFyToken, baseBalance, fyBalance] = await client.multicall({
+          allowFailure: false,
+          contracts: [
+            { abi: poolAbi, address: market.poolAddress, functionName: "baseToken" },
+            { abi: poolAbi, address: market.poolAddress, functionName: "fyToken" },
+            { abi: poolAbi, address: market.poolAddress, functionName: "getBaseBalance" },
+            { abi: poolAbi, address: market.poolAddress, functionName: "getFYTokenBalance" },
+          ],
+        });
+
+        const [baseDecimalsRaw, fyDecimalsRaw] = await client.multicall({
+          allowFailure: false,
+          contracts: [
+            { abi: erc20Abi, address: poolBaseToken, functionName: "decimals" },
+            { abi: erc20Abi, address: poolFyToken, functionName: "decimals" },
+          ],
+        });
+
+        const baseDecimals = Number(baseDecimalsRaw);
+        const fyDecimals = Number(fyDecimalsRaw);
+        const previewBaseIn = 10n ** BigInt(baseDecimals) / 1000n || 1n;
+
+        let previewFyOut: bigint | null = null;
+        let previewError: string | null = null;
+        try {
+          previewFyOut = await client.readContract({
+            abi: poolAbi,
+            address: market.poolAddress,
+            args: [previewBaseIn],
+            functionName: "sellBasePreview",
+          });
+        } catch (caught) {
+          previewError = getRevertSelector(caught);
+        }
+
+        const reservePWad =
+          fyBalance > 0n
+            ? (toWad(baseBalance, baseDecimals) * WAD) / toWad(fyBalance, fyDecimals)
+            : null;
+        const previewPWad =
+          previewFyOut && previewFyOut > 0n
+            ? (toWad(previewBaseIn, baseDecimals) * WAD) / toWad(previewFyOut, fyDecimals)
+            : null;
+
+        if (!cancelled) {
+          setState({
+            baseBalance,
+            baseDecimals,
+            error: null,
+            expectedBaseToken:
+              token === "cNGN"
+                ? (BORROW_CONFIG.tokens.cNgn as Address)
+                : (BORROW_CONFIG.tokens.kesm as Address),
+            expectedFyToken:
+              token === "cNGN"
+                ? (BORROW_CONFIG.tokens.fycNgn as Address)
+                : (BORROW_CONFIG.tokens.fyKesm as Address),
+            fyBalance,
+            fyDecimals,
+            loading: false,
+            poolBaseToken,
+            poolFyToken,
+            previewBaseIn,
+            previewError,
+            previewFyOut,
+            previewPWad,
+            reservePWad,
+          });
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setState((prev) => ({
+            ...(prev as AprDiagnostics),
+            error: formatRpcError(caught),
+            loading: false,
+          }));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, market, token]);
+
+  return state;
+}
 
 function formatMaturityDateLabel(maturitySeconds: number) {
   // Match the screenshot style (e.g. "31 Dec 2021"), but always in UTC.
@@ -117,6 +359,7 @@ function formatMaturityDateLabel(maturitySeconds: number) {
 }
 
 const U128_MAX = BigInt("340282366920938463463374607431768211455");
+const MAX_REASONABLE_APR_WAD = 10n * WAD; // 1000%
 
 function toWad(value: bigint, decimals: number) {
   if (decimals === 18) {
@@ -142,58 +385,76 @@ type BorrowAprContext = {
   fyDecimals: number;
   maturitySeconds: number;
   poolAddress: Address;
-  poolBaseBalance: bigint;
-  poolFyBalance: bigint;
+  poolBaseCached: bigint;
+  poolFyCachedVirtual: bigint;
+  poolSupply: bigint;
 };
 
-async function readBorrowAprContext(poolAddress: Address): Promise<BorrowAprContext> {
-  const [baseToken, fyToken, maturity, poolBaseBalance, poolFyBalance] =
-    await publicClient.multicall({
-      allowFailure: false,
-      contracts: [
-        { abi: poolAbi, address: poolAddress, functionName: "baseToken" },
-        { abi: poolAbi, address: poolAddress, functionName: "fyToken" },
-        { abi: poolAbi, address: poolAddress, functionName: "maturity" },
-        { abi: poolAbi, address: poolAddress, functionName: "getBaseBalance" },
-        { abi: poolAbi, address: poolAddress, functionName: "getFYTokenBalance" },
-      ],
-    });
+async function readBorrowAprContextForMarket(params: {
+  chainId: BorrowMarket["chainId"];
+  poolAddress: Address;
+}): Promise<BorrowAprContext> {
+  const client = getPublicClient(params.chainId);
+  const [baseToken, fyToken, maturity, cache, supply] = await client.multicall({
+    allowFailure: false,
+    contracts: [
+      { abi: poolAbi, address: params.poolAddress, functionName: "baseToken" },
+      { abi: poolAbi, address: params.poolAddress, functionName: "fyToken" },
+      { abi: poolAbi, address: params.poolAddress, functionName: "maturity" },
+      { abi: poolAbi, address: params.poolAddress, functionName: "getCache" },
+      { abi: poolAbi, address: params.poolAddress, functionName: "totalSupply" },
+    ],
+  });
 
-  const [baseDecimals, fyDecimals] = await publicClient.multicall({
+  const [baseDecimals, fyDecimals] = await client.multicall({
     allowFailure: false,
     contracts: [
       { abi: erc20Abi, address: baseToken, functionName: "decimals" },
       { abi: erc20Abi, address: fyToken, functionName: "decimals" },
     ],
   });
+  const [poolBaseCached, poolFyCachedVirtual] = cache;
 
   return {
     baseDecimals: Number(baseDecimals),
     fyDecimals: Number(fyDecimals),
     maturitySeconds: Number(maturity),
-    poolAddress,
-    poolBaseBalance,
-    poolFyBalance,
+    poolAddress: params.poolAddress,
+    poolBaseCached,
+    poolFyCachedVirtual,
+    poolSupply: supply,
   };
 }
 
 async function quoteAprFromTinySellBasePreview(params: {
+  chainId: BorrowMarket["chainId"];
   baseDecimals: number;
   fyDecimals: number;
   poolAddress: Address;
-  poolBaseBalance: bigint;
-  poolFyBalance: bigint;
+  poolBaseCached: bigint;
+  poolFyCachedVirtual: bigint;
+  realFyCached: bigint;
   timeRemaining: bigint;
 }) {
-  if (params.timeRemaining <= 0n || params.poolFyBalance <= 0n) {
-    return { aprText: "—", disabled: false, disabledReason: undefined };
+  const client = getPublicClient(params.chainId);
+  if (params.timeRemaining <= 0n || params.realFyCached <= 0n) {
+    return {
+      aprText: "—",
+      disabled: true,
+      disabledReason: "Pool not bootstrapped yet (no real fy reserves in cache).",
+    };
   }
+
+  const reservePWad =
+    (toWad(params.poolBaseCached, params.baseDecimals) * WAD) /
+    toWad(params.poolFyCachedVirtual, params.fyDecimals);
+  let pricePWad = reservePWad;
 
   try {
     const baseUnit = 10n ** BigInt(params.baseDecimals);
     const baseIn = baseUnit / 1000n || 1n;
     if (baseIn <= U128_MAX) {
-      const fyOut = await publicClient.readContract({
+      const fyOut = await client.readContract({
         abi: poolAbi,
         address: params.poolAddress,
         args: [baseIn],
@@ -201,12 +462,15 @@ async function quoteAprFromTinySellBasePreview(params: {
       });
 
       if (fyOut > 0n) {
-        const pWad = (toWad(baseIn, params.baseDecimals) * WAD) / toWad(fyOut, params.fyDecimals);
-        return {
-          aprText: formatAprPercent(aprFromPriceWad(pWad, params.timeRemaining)),
-          disabled: false,
-          disabledReason: undefined,
-        };
+        const previewPWad =
+          (toWad(baseIn, params.baseDecimals) * WAD) / toWad(fyOut, params.fyDecimals);
+        // Guard against tiny-trade quote outliers. If preview price diverges too much from reserves,
+        // use reserve-implied spot for APR display.
+        const lower = reservePWad / 4n;
+        const upper = reservePWad * 4n;
+        if (previewPWad >= lower && previewPWad <= upper) {
+          pricePWad = previewPWad;
+        }
       }
     }
   } catch (caught) {
@@ -219,29 +483,38 @@ async function quoteAprFromTinySellBasePreview(params: {
     }
   }
 
-  const pWad =
-    (toWad(params.poolBaseBalance, params.baseDecimals) * WAD) /
-    toWad(params.poolFyBalance, params.fyDecimals);
+  const aprWad = aprFromPriceWad(pricePWad, params.timeRemaining);
+  if (aprWad !== null && aprWad > MAX_REASONABLE_APR_WAD) {
+    return {
+      aprText: "—",
+      disabled: false,
+      disabledReason: "APR quote out of display range; price appears anomalous.",
+    };
+  }
   return {
-    aprText: formatAprPercent(aprFromPriceWad(pWad, params.timeRemaining)),
+    aprText: formatAprPercent(aprWad),
     disabled: false,
     disabledReason: undefined,
   };
 }
 
-async function fetchBorrowMaturityOption(): Promise<MaturityOption> {
-  const poolAddress = CELO_YIELD_POOL.poolAddress as Address;
-  const ctx = await readBorrowAprContext(poolAddress);
+async function fetchBorrowMaturityOptionForMarket(market: BorrowMarket): Promise<MaturityOption> {
+  const ctx = await readBorrowAprContextForMarket({
+    chainId: market.chainId,
+    poolAddress: market.poolAddress,
+  });
   const maturitySeconds = ctx.maturitySeconds;
   const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
   const timeRemaining = BigInt(maturitySeconds) - nowSeconds;
 
   const quote = await quoteAprFromTinySellBasePreview({
     baseDecimals: ctx.baseDecimals,
+    chainId: market.chainId,
     fyDecimals: ctx.fyDecimals,
     poolAddress: ctx.poolAddress,
-    poolBaseBalance: ctx.poolBaseBalance,
-    poolFyBalance: ctx.poolFyBalance,
+    poolBaseCached: ctx.poolBaseCached,
+    poolFyCachedVirtual: ctx.poolFyCachedVirtual,
+    realFyCached: ctx.poolFyCachedVirtual - ctx.poolSupply,
     timeRemaining,
   });
 
@@ -255,16 +528,21 @@ async function fetchBorrowMaturityOption(): Promise<MaturityOption> {
   };
 }
 
-function useBorrowMaturityOptions(): MaturityOption[] {
+function useBorrowMaturityOptions(market: BorrowMarket | null): MaturityOption[] {
   const [options, setOptions] = useState<MaturityOption[]>([
     { accent: "lime", aprText: "—", dateLabel: "—", id: "loading" },
   ]);
 
   useEffect(() => {
+    if (!market) {
+      setOptions([{ accent: "lime", aprText: "—", dateLabel: "—", id: "unsupported" }]);
+      return;
+    }
+
     let cancelled = false;
     const run = async () => {
       try {
-        const next: MaturityOption[] = [await fetchBorrowMaturityOption()];
+        const next: MaturityOption[] = [await fetchBorrowMaturityOptionForMarket(market)];
         if (!cancelled) {
           setOptions(next);
         }
@@ -287,7 +565,7 @@ function useBorrowMaturityOptions(): MaturityOption[] {
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, []);
+  }, [market]);
 
   return options;
 }
@@ -332,7 +610,8 @@ function getBorrowValidationError(params: {
   walletClient: WalletClient | null;
   collateral: bigint | null;
   borrow: bigint | null;
-  usdtBalance: bigint | null;
+  collateralBalance: bigint | null;
+  collateralLabel: string;
   token: TokenOption["id"];
 }) {
   if (!params.userAddress) {
@@ -341,14 +620,14 @@ function getBorrowValidationError(params: {
   if (!params.walletClient) {
     return "Wallet client unavailable.";
   }
-  if (params.token !== "KESm") {
+  if (params.token !== "KESm" && params.token !== "cNGN") {
     return "Borrowing this asset is not supported yet.";
   }
   if (!(params.collateral && params.borrow)) {
     return "Enter collateral and borrow amounts.";
   }
-  if (params.usdtBalance !== null && params.collateral > params.usdtBalance) {
-    return "Insufficient USDT balance.";
+  if (params.collateralBalance !== null && params.collateral > params.collateralBalance) {
+    return `Insufficient ${params.collateralLabel} balance.`;
   }
   return null;
 }
@@ -413,16 +692,18 @@ function quoteUnavailableHint(reason: QuoteFailureReason | undefined) {
 async function runBorrowFlow(params: {
   account: Address;
   walletClient: WalletClient;
-  collateral: bigint;
-  borrowKesDesired: bigint;
+  market: BorrowMarket;
+  collateralAmount: bigint;
+  borrowDesired: bigint;
   receiveMode: BorrowReceiveMode;
-  allowance: bigint | null;
+  collateralAllowance: bigint | null;
   vaultId: Hex | null;
   storageKey: string | null;
   onStatus: (status: string) => void;
   onTxHash: (hash: Hex) => void;
   persistVaultId: (vaultId: Hex) => void;
 }) {
+  const publicClient = getPublicClient(params.market.chainId);
   // Privy/wallet providers can occasionally race nonces for multi-tx flows.
   // We manage nonces ourselves to keep tx ordering deterministic.
   let nextNonce = await publicClient.getTransactionCount({
@@ -430,13 +711,17 @@ async function runBorrowFlow(params: {
     blockTag: "pending",
   });
 
-  const needsApproval = params.allowance === null || params.allowance < params.collateral;
+  const needsApproval =
+    params.collateralAllowance === null || params.collateralAllowance < params.collateralAmount;
   if (needsApproval) {
-    params.onStatus("Step 1/4: Approving USDT…");
-    const approval = await approveUsdtJoin({
+    params.onStatus(`Step 1/4: Approving ${params.market.collateralLabel}…`);
+    const approval = await approveTokenToSpender({
       account: params.account,
-      amount: params.collateral,
+      amount: params.collateralAmount,
+      chainId: params.market.chainId,
       nonce: nextNonce,
+      spender: params.market.collateralJoin,
+      token: params.market.collateralToken,
       walletClient: params.walletClient,
     });
     nextNonce += 1;
@@ -446,9 +731,13 @@ async function runBorrowFlow(params: {
   let nextVaultId: Hex | null = params.vaultId;
   if (!nextVaultId) {
     params.onStatus("Step 2/4: Building vault…");
-    const built = await buildVault({
+    const built = await buildVaultForMarket({
       account: params.account,
+      chainId: params.market.chainId,
+      ilkId: params.market.ilkId,
+      ladle: params.market.ladle,
       nonce: nextNonce,
+      seriesId: params.market.seriesId,
       walletClient: params.walletClient,
     });
     nextNonce += 1;
@@ -464,11 +753,13 @@ async function runBorrowFlow(params: {
   }
 
   if (params.receiveMode === "FY_KESM") {
-    params.onStatus("Step 3/3: Supplying collateral and borrowing fyKESm…");
-    const result = await pour({
+    params.onStatus(`Step 3/3: Supplying collateral and borrowing ${params.market.fyLabel}…`);
+    const result = await pourForMarket({
       account: params.account,
-      art: params.borrowKesDesired,
-      ink: params.collateral,
+      art: params.borrowDesired,
+      chainId: params.market.chainId,
+      ink: params.collateralAmount,
+      ladle: params.market.ladle,
       nonce: nextNonce,
       to: params.account,
       vaultId: nextVaultId,
@@ -478,19 +769,24 @@ async function runBorrowFlow(params: {
     return { vaultId: nextVaultId };
   }
 
-  const quote = await quoteFyForKes(params.borrowKesDesired);
+  const quote = await quoteFyForKes(params.borrowDesired, {
+    chainId: params.market.chainId,
+    poolAddress: params.market.poolAddress,
+  });
   if (quote.fyToBorrow <= 0n) {
     const reason = quote.reason ?? "UNKNOWN";
     throw new Error(`QUOTE_UNAVAILABLE|${reason}`);
   }
 
   params.onStatus("Step 3/4: Supplying collateral and borrowing…");
-  const result = await pour({
+  const result = await pourForMarket({
     account: params.account,
     art: quote.fyToBorrow,
-    ink: params.collateral,
+    chainId: params.market.chainId,
+    ink: params.collateralAmount,
+    ladle: params.market.ladle,
     nonce: nextNonce,
-    to: CELO_YIELD_POOL.poolAddress as Address,
+    to: params.market.poolAddress,
     vaultId: nextVaultId,
     walletClient: params.walletClient,
   });
@@ -498,12 +794,14 @@ async function runBorrowFlow(params: {
   params.onTxHash(result.txHash);
 
   const slippageBps = 50n;
-  const minKesOut = (params.borrowKesDesired * (10_000n - slippageBps)) / 10_000n;
-  params.onStatus("Step 4/4: Swapping fyKESm into KESm…");
-  const swapResult = await sellFyKes({
+  const minBaseOut = (params.borrowDesired * (10_000n - slippageBps)) / 10_000n;
+  params.onStatus(`Step 4/4: Swapping ${params.market.fyLabel} into ${params.market.borrowLabel}…`);
+  const swapResult = await sellFyTokenForMarket({
     account: params.account,
-    minKesOut,
+    chainId: params.market.chainId,
+    minBaseOut,
     nonce: nextNonce,
+    poolAddress: params.market.poolAddress,
     walletClient: params.walletClient,
   });
   params.onTxHash(swapResult.txHash);
@@ -738,8 +1036,11 @@ function MaturityGrid({
 function CollateralCard({
   collateralInput,
   onCollateralChange,
-  usdtBalance,
-  usdtDecimals,
+  collateralBalance,
+  collateralDecimals,
+  collateralLabel,
+  collateralOptions,
+  selectedCollateral,
   onMax,
   collateralMenuOpen,
   collateralMenuRef,
@@ -748,15 +1049,17 @@ function CollateralCard({
 }: {
   collateralInput: string;
   onCollateralChange: (value: string) => void;
-  usdtBalance: bigint | null;
-  usdtDecimals: number;
+  collateralBalance: bigint | null;
+  collateralDecimals: number;
+  collateralLabel: string;
+  collateralOptions: CollateralOption[];
+  selectedCollateral: CollateralOption;
   onMax: () => void;
   collateralMenuOpen: boolean;
   collateralMenuRef: React.RefObject<HTMLDivElement | null>;
   onToggleCollateralMenu: () => void;
   onCloseCollateralMenu: () => void;
 }) {
-  const selectedCollateral = COLLATERAL_OPTIONS[0];
   return (
     <div className="mt-4 rounded-2xl border border-numo-border bg-white px-4 py-3 shadow-sm">
       <div className="flex items-start justify-between gap-3">
@@ -770,7 +1073,10 @@ function CollateralCard({
             value={collateralInput}
           />
           <div className="mt-1 text-gray-500 text-xs">
-            Balance: {usdtBalance === null ? "—" : `${formatUnits(usdtBalance, usdtDecimals)} USDT`}
+            Balance:{" "}
+            {collateralBalance === null
+              ? "—"
+              : `${formatUnits(collateralBalance, collateralDecimals)} ${collateralLabel}`}
           </div>
         </div>
         <div className="flex flex-col items-end gap-2">
@@ -805,7 +1111,7 @@ function CollateralCard({
                 <div className="px-3 py-2 font-semibold text-numo-muted text-xs tracking-wide">
                   SELECT STABLECOIN
                 </div>
-                {COLLATERAL_OPTIONS.map((option) => (
+                {collateralOptions.map((option) => (
                   <button
                     className={cn(
                       "flex w-full items-center justify-between rounded-2xl bg-numo-pill px-3 py-3 text-left text-numo-ink transition hover:bg-numo-pill/60"
@@ -830,7 +1136,7 @@ function CollateralCard({
 
           <button
             className="rounded-full bg-gray-100 px-3 py-2 font-semibold text-black text-xs transition hover:bg-gray-200 disabled:opacity-50"
-            disabled={usdtBalance === null}
+            disabled={collateralBalance === null}
             onClick={onMax}
             type="button"
           >
@@ -959,7 +1265,7 @@ function BorrowAmountRow({
           id="borrow-amount"
           inputMode="decimal"
           onChange={(event) => onBorrowChange(event.target.value)}
-          placeholder={token === "KESm" ? "Enter amount" : "Coming soon"}
+          placeholder={token === "KESm" || token === "cNGN" ? "Enter amount" : "Coming soon"}
           value={borrowInput}
         />
       </div>
@@ -1012,18 +1318,19 @@ function BorrowAmountRow({
 }
 
 function getPreflightError(params: {
-  isCelo: boolean;
+  connectedChainId: number | null;
+  expectedChainId: number;
   submitError: string | null;
   parsedCollateral: bigint | null;
-  parsedBorrowKes: bigint | null;
+  parsedBorrow: bigint | null;
 }) {
-  if (!params.isCelo) {
-    return "Switch wallet network to Celo (42220).";
+  if (params.connectedChainId !== params.expectedChainId) {
+    return `Switch wallet network to chain ${params.expectedChainId}.`;
   }
   if (params.submitError) {
     return params.submitError;
   }
-  if (!(params.parsedCollateral && params.parsedBorrowKes)) {
+  if (!(params.parsedCollateral && params.parsedBorrow)) {
     return "Enter collateral and borrow amounts.";
   }
   return null;
@@ -1060,11 +1367,11 @@ function computeCollateralizationPercent(params: {
   return Number.isFinite(percent) ? percent : null;
 }
 
-function getBorrowStepError(token: TokenOption["id"], parsedBorrowKes: bigint | null) {
-  if (token !== "KESm") {
+function getBorrowStepError(token: TokenOption["id"], parsedBorrowAmount: bigint | null) {
+  if (token !== "KESm" && token !== "cNGN") {
     return "Borrowing this asset is not supported yet.";
   }
-  if (!parsedBorrowKes) {
+  if (!parsedBorrowAmount) {
     return "Enter amount to borrow.";
   }
   return null;
@@ -1092,10 +1399,11 @@ function parseQuoteFailureReason(message: string): QuoteFailureReason | null {
 async function submitBorrowTx(params: {
   account: Address;
   walletClient: WalletClient;
+  market: BorrowMarket;
   parsedCollateral: bigint;
-  parsedBorrowKes: bigint;
+  parsedBorrow: bigint;
   receiveMode: BorrowReceiveMode;
-  usdtAllowance: bigint | null;
+  collateralAllowance: bigint | null;
   vaultId: Hex | null;
   storageKey: string | null;
   onStatus: (status: string) => void;
@@ -1105,9 +1413,10 @@ async function submitBorrowTx(params: {
   try {
     const flow = await runBorrowFlow({
       account: params.account,
-      allowance: params.usdtAllowance,
-      borrowKesDesired: params.parsedBorrowKes,
-      collateral: params.parsedCollateral,
+      borrowDesired: params.parsedBorrow,
+      collateralAllowance: params.collateralAllowance,
+      collateralAmount: params.parsedCollateral,
+      market: params.market,
       onStatus: params.onStatus,
       onTxHash: params.onTxHash,
       persistVaultId: params.persistVaultId,
@@ -1134,12 +1443,13 @@ async function submitBorrowTx(params: {
 async function handleBorrowSubmit(params: {
   userAddress?: Address;
   walletClient: WalletClient | null;
-  isCelo: boolean;
+  connectedChainId: number | null;
+  market: BorrowMarket;
   submitError: string | null;
   parsedCollateral: bigint | null;
-  parsedBorrowKes: bigint | null;
+  parsedBorrow: bigint | null;
   receiveMode: BorrowReceiveMode;
-  usdtAllowance: bigint | null;
+  collateralAllowance: bigint | null;
   vaultId: Hex | null;
   storageKey: string | null;
   setIsSubmitting: (value: boolean) => void;
@@ -1155,8 +1465,9 @@ async function handleBorrowSubmit(params: {
   }
 
   const preflightError = getPreflightError({
-    isCelo: params.isCelo,
-    parsedBorrowKes: params.parsedBorrowKes,
+    connectedChainId: params.connectedChainId,
+    expectedChainId: params.market.chainId,
+    parsedBorrow: params.parsedBorrow,
     parsedCollateral: params.parsedCollateral,
     submitError: params.submitError,
   });
@@ -1166,7 +1477,7 @@ async function handleBorrowSubmit(params: {
   }
 
   const collateral = params.parsedCollateral as bigint;
-  const borrowKesDesired = params.parsedBorrowKes as bigint;
+  const borrowDesired = params.parsedBorrow as bigint;
 
   params.setIsSubmitting(true);
   params.setQuoteFailureReason(null);
@@ -1176,14 +1487,15 @@ async function handleBorrowSubmit(params: {
 
   const result = await submitBorrowTx({
     account: params.userAddress,
+    collateralAllowance: params.collateralAllowance,
+    market: params.market,
     onStatus: (status) => params.setTxStatus(status),
     onTxHash: (hash) => params.setTxHash(hash),
-    parsedBorrowKes: borrowKesDesired,
+    parsedBorrow: borrowDesired,
     parsedCollateral: collateral,
     persistVaultId: (next) => params.setVaultId(next),
     receiveMode: params.receiveMode,
     storageKey: params.storageKey,
-    usdtAllowance: params.usdtAllowance,
     vaultId: params.vaultId,
     walletClient: params.walletClient,
   });
@@ -1207,6 +1519,7 @@ async function handleBorrowSubmit(params: {
 async function handleRecoverPool(params: {
   userAddress?: Address;
   walletClient: WalletClient | null;
+  market: BorrowMarket;
   setIsSubmitting: (value: boolean) => void;
   setQuoteFailureReason: (value: QuoteFailureReason | null) => void;
   setTxOutcome: (value: TxOutcome | null) => void;
@@ -1222,10 +1535,12 @@ async function handleRecoverPool(params: {
   params.setTxHash(null);
   params.setTxStatus("Checking pool state…");
   try {
-    const recovery = await recoverBorrowPool({
+    const recovery = await recoverBorrowPoolForMarket({
       account: params.userAddress,
+      chainId: params.market.chainId,
       onStatus: (status) => params.setTxStatus(status),
       onTxHash: (hash) => params.setTxHash(hash),
+      poolAddress: params.market.poolAddress,
       walletClient: params.walletClient,
     });
     if (recovery.reason === "CACHE_GT_LIVE") {
@@ -1265,6 +1580,8 @@ function BorrowStepView(params: {
   selectedMaturityId: string;
   onSelectMaturity: (id: string) => void;
   maturityOptions: MaturityOption[];
+  diagnostics: AprDiagnostics | null;
+  onDiagnosticsToggle: (open: boolean) => void;
   canProceed: boolean;
   borrowStepError: string | null;
   onNext: () => void;
@@ -1295,6 +1612,51 @@ function BorrowStepView(params: {
         tokenLabel={params.token}
       />
 
+      <details
+        className="mt-4 rounded-2xl border border-numo-border bg-white px-4 py-3 text-numo-muted text-xs"
+        onToggle={(event) =>
+          params.onDiagnosticsToggle((event.currentTarget as HTMLDetailsElement).open)
+        }
+      >
+        <summary className="cursor-pointer select-none text-numo-ink">APR diagnostics</summary>
+        {params.diagnostics ? (
+          <div className="mt-2 grid gap-1">
+            <div>loading: {params.diagnostics.loading ? "yes" : "no"}</div>
+            <div>error: {params.diagnostics.error ?? "—"}</div>
+            <div>
+              pool.baseToken: {shortAddress(params.diagnostics.poolBaseToken)} | expected:{" "}
+              {shortAddress(params.diagnostics.expectedBaseToken)} | match:{" "}
+              {renderMatch(params.diagnostics.poolBaseToken, params.diagnostics.expectedBaseToken)}
+            </div>
+            <div>
+              pool.fyToken: {shortAddress(params.diagnostics.poolFyToken)} | expected:{" "}
+              {shortAddress(params.diagnostics.expectedFyToken)} | match:{" "}
+              {renderMatch(params.diagnostics.poolFyToken, params.diagnostics.expectedFyToken)}
+            </div>
+            <div>
+              getBaseBalance / getFYTokenBalance:{" "}
+              {params.diagnostics.baseBalance?.toString() ?? "—"} /{" "}
+              {params.diagnostics.fyBalance?.toString() ?? "—"}
+            </div>
+            <div>
+              baseDecimals / fyDecimals: {params.diagnostics.baseDecimals ?? "—"} /{" "}
+              {params.diagnostics.fyDecimals ?? "—"}
+            </div>
+            <div>
+              sellBasePreview({params.diagnostics.previewBaseIn?.toString() ?? "—"}) fyOut:{" "}
+              {params.diagnostics.previewFyOut?.toString() ?? "—"} (revert:{" "}
+              {params.diagnostics.previewError ?? "none"})
+            </div>
+            <div>
+              reservePrice(base/fy): {formatRatioWad(params.diagnostics.reservePWad)} |
+              previewPrice: {formatRatioWad(params.diagnostics.previewPWad)}
+            </div>
+          </div>
+        ) : (
+          <div className="mt-2">No diagnostics for this token yet.</div>
+        )}
+      </details>
+
       <SubmitSection
         canContinue={params.canProceed}
         isSubmitting={false}
@@ -1309,10 +1671,11 @@ function BorrowStepView(params: {
 }
 
 function CollateralStepView(params: {
+  market: BorrowMarket;
   collateralInput: string;
   onCollateralChange: (value: string) => void;
-  usdtBalance: bigint | null;
-  usdtDecimals: number;
+  collateralBalance: bigint | null;
+  collateralDecimals: number;
   onMaxCollateral: () => void;
   collateralMenuOpen: boolean;
   collateralMenuRef: React.RefObject<HTMLDivElement | null>;
@@ -1379,15 +1742,26 @@ function CollateralStepView(params: {
 
       <div className="mt-6 text-numo-muted text-xs">Amount of collateral to add</div>
       <CollateralCard
+        collateralBalance={params.collateralBalance}
+        collateralDecimals={params.collateralDecimals}
         collateralInput={params.collateralInput}
+        collateralLabel={params.market.collateralLabel}
         collateralMenuOpen={params.collateralMenuOpen}
         collateralMenuRef={params.collateralMenuRef}
+        collateralOptions={COLLATERAL_OPTIONS.filter(
+          (option) => option.chainId === params.market.chainId
+        )}
         onCloseCollateralMenu={params.onCloseCollateralMenu}
         onCollateralChange={params.onCollateralChange}
         onMax={params.onMaxCollateral}
         onToggleCollateralMenu={params.onToggleCollateralMenu}
-        usdtBalance={params.usdtBalance}
-        usdtDecimals={params.usdtDecimals}
+        selectedCollateral={
+          COLLATERAL_OPTIONS.find(
+            (option) =>
+              option.chainId === params.market.chainId &&
+              option.label === params.market.collateralLabel
+          ) ?? COLLATERAL_OPTIONS[0]
+        }
       />
 
       <div className="mt-4">
@@ -1419,7 +1793,9 @@ function CollateralStepView(params: {
             onClick={() => params.onSelectReceiveMode("KESM_NOW")}
             type="button"
           >
-            <div className="font-semibold text-numo-ink text-sm">KESm now</div>
+            <div className="font-semibold text-numo-ink text-sm">
+              {params.market.borrowLabel} now
+            </div>
             <div className="text-numo-muted text-xs">Borrow and swap immediately</div>
           </button>
           <button
@@ -1432,7 +1808,7 @@ function CollateralStepView(params: {
             onClick={() => params.onSelectReceiveMode("FY_KESM")}
             type="button"
           >
-            <div className="font-semibold text-numo-ink text-sm">fyKESm</div>
+            <div className="font-semibold text-numo-ink text-sm">{params.market.fyLabel}</div>
             <div className="text-numo-muted text-xs">Skip pool swap; swap later</div>
           </button>
         </div>
@@ -1455,9 +1831,10 @@ function CollateralStepView(params: {
   );
 }
 
+// biome-ignore lint/complexity/noExcessiveCognitiveComplexity: Component orchestrates multi-step borrow UX and txn state.
 export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRateProps) {
   const userAddress = usePrivyAddress();
-  const { isCelo, walletClient } = usePrivyWalletClient();
+  const { chainId: connectedChainId, walletClient } = usePrivyWalletClient();
 
   const [step, setStep] = useState<BorrowStep>("borrow");
   const [collateralInput, setCollateralInput] = useState("");
@@ -1475,7 +1852,8 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
       }),
     [selectedChain]
   );
-  const maturityOptions = useBorrowMaturityOptions();
+  const activeMarket = getMarketForToken(token);
+  const maturityOptions = useBorrowMaturityOptions(activeMarket);
   const defaultMaturityId = maturityOptions[0]?.id ?? "";
   const [selectedMaturityId, setSelectedMaturityId] = useState<string>(defaultMaturityId);
   const [tokenMenuOpen, setTokenMenuOpen] = useState(false);
@@ -1486,32 +1864,45 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
   const [txStatus, setTxStatus] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<Hex | null>(null);
   const [txOutcome, setTxOutcome] = useState<TxOutcome | null>(null);
+  const defaultMarket = getMarketForToken("KESm");
+  if (!defaultMarket) {
+    throw new Error("Default borrow market is missing.");
+  }
 
   const { storageKey, vaultId, setVaultId } = useBorrowVaultId({
-    ilkId: BORROW_CONFIG.ilk.usdt,
-    seriesId: BORROW_CONFIG.seriesId.fyKesm,
+    ilkId: activeMarket?.ilkId ?? BORROW_CONFIG.ilk.usdt,
+    seriesId: activeMarket?.seriesId ?? BORROW_CONFIG.seriesId.fyKesm,
     userAddress,
   });
 
   const discoveredVault = useBorrowVaultDiscovery({
-    cauldronAddress: BORROW_CONFIG.core.cauldron as Address,
-    ilkId: BORROW_CONFIG.ilk.usdt as Hex,
-    seriesId: BORROW_CONFIG.seriesId.fyKesm as Hex,
+    cauldronAddress: (activeMarket?.cauldron ?? BORROW_CONFIG.core.cauldron) as Address,
+    ilkId: (activeMarket?.ilkId ?? BORROW_CONFIG.ilk.usdt) as Hex,
+    seriesId: (activeMarket?.seriesId ?? BORROW_CONFIG.seriesId.fyKesm) as Hex,
     userAddress,
   });
 
-  const { kesDecimals, refetch, usdtAllowance, usdtBalance, usdtDecimals } = useBorrowWalletData({
-    fyToken: BORROW_CONFIG.tokens.fyKesm as Address,
-    kesToken: BORROW_CONFIG.tokens.kesm as Address,
-    usdtJoin: BORROW_CONFIG.joins.usdt as Address,
-    usdtToken: BORROW_CONFIG.tokens.usdt as Address,
-    userAddress,
-  });
+  const { borrowDecimals, collateralAllowance, collateralBalance, collateralDecimals, refetch } =
+    useBorrowWalletData({
+      borrowToken:
+        activeMarket?.borrowLabel === "cNGN"
+          ? (BORROW_CONFIG.tokens.cNgn as Address)
+          : (BORROW_CONFIG.tokens.kesm as Address),
+      chainId: activeMarket?.chainId,
+      collateralJoin: (activeMarket?.collateralJoin ?? BORROW_CONFIG.joins.usdt) as Address,
+      collateralToken: (activeMarket?.collateralToken ?? BORROW_CONFIG.tokens.usdt) as Address,
+      fyToken:
+        activeMarket?.borrowLabel === "cNGN"
+          ? (BORROW_CONFIG.tokens.fycNgn as Address)
+          : (BORROW_CONFIG.tokens.fyKesm as Address),
+      userAddress,
+    });
 
   const { kesmPerUsdWad } = useKesmPerUsdRate();
 
-  const parsedCollateral = safeParseAmount(collateralInput, usdtDecimals);
-  const parsedBorrowKes = safeParseAmount(borrowInput, kesDecimals);
+  const parsedCollateral = safeParseAmount(collateralInput, collateralDecimals);
+  const parsedBorrowKes = safeParseAmount(borrowInput, borrowDecimals);
+  const collateralLabel = activeMarket?.collateralLabel ?? "USDT";
 
   const isSubmittingRef = useRef(false);
   useEffect(() => {
@@ -1563,15 +1954,18 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
     setCollateralMenuOpen(false)
   );
 
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const borrowStepError = getBorrowStepError(token, parsedBorrowKes);
   const selectedMaturity =
     maturityOptions.find((option) => option.id === selectedMaturityId) ?? maturityOptions[0];
+  const diagnostics = useAprDiagnostics(activeMarket, token, diagnosticsOpen);
   const maturitySelectionError =
     !selectedMaturityId || selectedMaturityId === "loading" || selectedMaturityId === "error"
       ? "Loading maturity…"
       : (selectedMaturity?.disabledReason ??
         (selectedMaturity?.disabled ? "Maturity unavailable." : null));
-  const borrowNextError = borrowStepError ?? maturitySelectionError;
+  const unsupportedMarketError = activeMarket ? null : "Borrowing this asset is not supported yet.";
+  const borrowNextError = unsupportedMarketError ?? borrowStepError ?? maturitySelectionError;
   const canProceed = borrowNextError === null;
 
   const effectiveVaultId = vaultId ?? discoveredVault.vaultId;
@@ -1592,16 +1986,20 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
           const validationError = getBorrowValidationError({
             borrow: parsedBorrowKes,
             collateral: parsedCollateral,
+            collateralBalance,
+            collateralLabel,
             token,
-            usdtBalance,
             userAddress,
             walletClient,
           });
-          const networkError = isCelo ? null : "Switch wallet network to Celo (42220).";
+          let networkError: string | null = null;
+          if (activeMarket && connectedChainId !== activeMarket.chainId) {
+            networkError = `Switch wallet network to ${getChainLabel(activeMarket.chainId)} (${activeMarket.chainId}).`;
+          }
           const vaultError = effectiveVaultId ? null : "No existing vault found for this maturity.";
           return networkError ?? validationError ?? vaultError;
         })();
-  const canSubmit = Boolean(selectedMaturityId) && !submitError;
+  const canSubmit = Boolean(selectedMaturityId) && !submitError && Boolean(activeMarket);
 
   return (
     <div className={cn("w-full", className)}>
@@ -1617,8 +2015,10 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
               borrowInput={borrowInput}
               borrowStepError={borrowNextError}
               canProceed={canProceed}
+              diagnostics={diagnostics}
               maturityOptions={maturityOptions}
               onBorrowChange={(value) => setBorrowInput(value)}
+              onDiagnosticsToggle={setDiagnosticsOpen}
               onNext={() => {
                 setQuoteFailureReason(null);
                 setTxOutcome(null);
@@ -1642,28 +2042,32 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
           ) : (
             <CollateralStepView
               canSubmit={canSubmit}
+              collateralBalance={collateralBalance}
+              collateralDecimals={collateralDecimals}
               collateralInput={collateralInput}
               collateralizationPercent={computeCollateralizationPercent({
                 collateral: parsedCollateral,
-                collateralDecimals: usdtDecimals,
+                collateralDecimals,
                 debt: parsedBorrowKes,
-                debtDecimals: kesDecimals,
-                kesmPerUsdWad,
+                debtDecimals: borrowDecimals,
+                kesmPerUsdWad: activeMarket?.borrowLabel === "KESm" ? kesmPerUsdWad : null,
               })}
               collateralMenuOpen={collateralMenuOpen}
               collateralMenuRef={collateralMenuRef}
               isSubmitting={isSubmitting}
+              market={activeMarket ?? defaultMarket}
               onBack={() => setStep("borrow")}
               onCloseCollateralMenu={() => setCollateralMenuOpen(false)}
               onCollateralChange={(value) => setCollateralInput(value)}
               onMaxCollateral={() => {
-                if (usdtBalance === null) {
+                if (collateralBalance === null) {
                   return;
                 }
-                setCollateralInput(formatUnits(usdtBalance, usdtDecimals));
+                setCollateralInput(formatUnits(collateralBalance, collateralDecimals));
               }}
               onRecoverPool={() =>
                 void handleRecoverPool({
+                  market: activeMarket ?? defaultMarket,
                   setIsSubmitting,
                   setQuoteFailureReason,
                   setTxHash,
@@ -1675,9 +2079,14 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
               }
               onSelectReceiveMode={(mode) => setReceiveMode(mode)}
               onSubmit={() => {
+                if (!activeMarket) {
+                  return;
+                }
                 void handleBorrowSubmit({
-                  isCelo,
-                  parsedBorrowKes,
+                  collateralAllowance,
+                  connectedChainId,
+                  market: activeMarket,
+                  parsedBorrow: parsedBorrowKes,
                   parsedCollateral,
                   receiveMode,
                   refetch,
@@ -1689,7 +2098,6 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
                   setVaultId,
                   storageKey,
                   submitError,
-                  usdtAllowance,
                   userAddress,
                   vaultId: effectiveVaultId,
                   walletClient,
@@ -1702,8 +2110,6 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
               txHash={txHash}
               txOutcome={txOutcome}
               txStatus={txStatus}
-              usdtBalance={usdtBalance}
-              usdtDecimals={usdtDecimals}
               vaultDiscoveryError={discoveredVault.error}
               vaultDiscoveryStatus={discoveredVault.status}
               vaultId={effectiveVaultId}

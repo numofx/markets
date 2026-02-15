@@ -27,6 +27,23 @@ function DiagnosticsBlock({
       {diagnostics.lastError ? (
         <div className="text-red-700">Read error: {diagnostics.lastError}</div>
       ) : null}
+      {diagnostics.basePoolSeriesId ? (
+        <div>Base seriesId: {diagnostics.basePoolSeriesId}</div>
+      ) : null}
+      {diagnostics.basePoolConfigured ? (
+        <div>Base configured pool: {diagnostics.basePoolConfigured}</div>
+      ) : null}
+      {diagnostics.basePoolOnchain ? (
+        <div>Base onchain pool: {diagnostics.basePoolOnchain}</div>
+      ) : null}
+      {diagnostics.basePoolMatches === false ? (
+        <div className="text-amber-700">
+          Warning: Base configured pool does not match ladle.pools(seriesId).
+        </div>
+      ) : null}
+      {diagnostics.basePoolMatches === true ? (
+        <div className="text-emerald-700">Base pool wiring check passed.</div>
+      ) : null}
     </>
   );
 }
@@ -60,6 +77,10 @@ type BorrowFormViewProps = {
     usdtBalance?: string;
     usdtBalanceRaw?: string;
     lastError?: string | null;
+    basePoolConfigured?: string;
+    basePoolOnchain?: string;
+    basePoolSeriesId?: string;
+    basePoolMatches?: boolean;
   };
 };
 

@@ -9,7 +9,13 @@ import { useBorrowVaultId } from "@/lib/useBorrowVaultId";
 import { useBorrowWalletData } from "@/lib/useBorrowWalletData";
 import { usePrivyAddress } from "@/lib/usePrivyAddress";
 import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
-import { approveUsdtJoin, buildVault, pour, sellFyKes } from "@/src/borrow-actions";
+import {
+  approveUsdtJoin,
+  buildVault,
+  pour,
+  readBasePoolConsistency,
+  sellFyKes,
+} from "@/src/borrow-actions";
 import { BORROW_CONFIG } from "@/src/borrow-config";
 import { quoteFyForKes } from "@/src/borrow-quote";
 import { CELO_YIELD_POOL } from "@/src/poolInfo";
@@ -175,6 +181,12 @@ export function BorrowForm({ className }: BorrowFormProps) {
   const { isCelo, walletClient } = usePrivyWalletClient();
 
   const [appChainId, setAppChainId] = useState<number | null>(null);
+  const [basePoolConsistency, setBasePoolConsistency] = useState<{
+    configuredPool: Address;
+    onchainPool: Address;
+    matches: boolean;
+    seriesId: string;
+  } | null>(null);
 
   const [collateralInput, setCollateralInput] = useState("");
   const [borrowInput, setBorrowInput] = useState("");
@@ -245,6 +257,22 @@ export function BorrowForm({ className }: BorrowFormProps) {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void readBasePoolConsistency()
+      .then((result) => {
+        if (!cancelled) {
+          setBasePoolConsistency(result);
+        }
+      })
+      .catch(() => {
+        // Best-effort diagnostic read only.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <BorrowFormView
       borrowBalanceLabel={kesBalanceLabel}
@@ -257,6 +285,10 @@ export function BorrowForm({ className }: BorrowFormProps) {
       collateralUsdLabel={collateralInput || "0"}
       diagnostics={{
         appChainId,
+        basePoolConfigured: basePoolConsistency?.configuredPool,
+        basePoolMatches: basePoolConsistency?.matches,
+        basePoolOnchain: basePoolConsistency?.onchainPool,
+        basePoolSeriesId: basePoolConsistency?.seriesId,
         lastError,
         rpcUrl: CELO_RPC_URL,
         usdtBalance: usdtBalance === null ? "—" : formatUnits(usdtBalance, usdtDecimals),

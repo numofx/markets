@@ -9,6 +9,7 @@ import { decodeEventLog, formatUnits, parseUnits } from "viem";
 import { celo } from "viem/chains";
 import { erc20Abi } from "@/lib/abi/erc20";
 import { poolAbi } from "@/lib/abi/pool";
+import { publicClient as basePublicClient } from "@/lib/baseClients";
 import { publicClient } from "@/lib/celoClients";
 import { cn } from "@/lib/cn";
 import { getRevertSelector } from "@/lib/get-revert-selector";
@@ -16,7 +17,7 @@ import { usePoolReads } from "@/lib/usePoolReads";
 import { usePrivyAddress } from "@/lib/usePrivyAddress";
 import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
 import { aprFromPriceWad, formatAprPercent, WAD } from "@/src/apr";
-import { CELO_YIELD_POOL } from "@/src/poolInfo";
+import { BASE_CNGN_POOL, CELO_YIELD_POOL } from "@/src/poolInfo";
 
 type LendFixedRateProps = {
   className?: string;
@@ -53,6 +54,18 @@ const TOKEN_ICON_SRC = {
 const U128_MAX = BigInt("340282366920938463463374607431768211455");
 const DEFAULT_SLIPPAGE_BPS = 50n;
 const WALLET_TIMEOUT_MS = 120_000;
+const MAX_REASONABLE_APR_WAD = 10n * WAD; // 1000%
+
+function formatRpcError(caught: unknown) {
+  const message = caught instanceof Error ? caught.message : String(caught ?? "");
+  if (message.includes("Status: 429") || message.includes("HTTP request failed. Status: 429")) {
+    return "RPC rate limited (HTTP 429). Set NEXT_PUBLIC_BASE_RPC_URL to a dedicated Base RPC.";
+  }
+  if (message.includes("HTTP request failed")) {
+    return "RPC request failed. Try again or switch RPC.";
+  }
+  return message || "RPC request failed.";
+}
 
 function sumErc20TransfersTo(params: {
   logs: readonly { address: Address; data: Hex; topics: readonly Hex[] }[];
@@ -144,15 +157,23 @@ function toWad(value: bigint, decimals: number) {
 }
 
 async function fetchLendAprText(params: {
+  previewSellBase: (baseIn: bigint) => Promise<bigint>;
   baseDecimals: number;
   fyDecimals: number;
-  poolBaseBalance: bigint;
-  poolFyBalance: bigint;
+  poolBaseCached: bigint;
+  poolFyCachedVirtual: bigint;
+  realFyCached: bigint;
   timeRemaining: bigint;
 }) {
-  if (params.timeRemaining <= 0n || params.poolFyBalance <= 0n) {
-    return { aprText: "—", unavailable: false };
+  // If there is no "real" fy in cache (virtual == supply), the pool cannot quote lend trades.
+  if (params.timeRemaining <= 0n || params.realFyCached <= 0n) {
+    return { aprText: "—", unavailable: true };
   }
+
+  const reservePWad =
+    (toWad(params.poolBaseCached, params.baseDecimals) * WAD) /
+    toWad(params.poolFyCachedVirtual, params.fyDecimals);
+  let pricePWad = reservePWad;
 
   // Prefer quoting the pool for a small trade size (1 base token) to get a curve-aware spot price.
   try {
@@ -160,133 +181,164 @@ async function fetchLendAprText(params: {
     // Use a tiny amount for a closer-to-spot quote (0.001 base token), matching typical UX expectations.
     const baseIn = baseUnit / 1000n || 1n;
     if (baseIn <= U128_MAX) {
-      const fyOut = await publicClient.readContract({
-        abi: poolAbi,
-        address: CELO_YIELD_POOL.poolAddress as Address,
-        args: [baseIn],
-        functionName: "sellBasePreview",
-      });
+      const fyOut = await params.previewSellBase(baseIn);
 
       if (fyOut > 0n) {
-        const baseInWad = toWad(baseIn, params.baseDecimals);
-        const fyOutWad = toWad(fyOut, params.fyDecimals);
-        const pWad = (baseInWad * WAD) / fyOutWad;
-        return {
-          aprText: formatAprPercent(aprFromPriceWad(pWad, params.timeRemaining)),
-          unavailable: false,
-        };
+        const previewPWad =
+          (toWad(baseIn, params.baseDecimals) * WAD) / toWad(fyOut, params.fyDecimals);
+        const lower = reservePWad / 4n;
+        const upper = reservePWad * 4n;
+        if (previewPWad >= lower && previewPWad <= upper) {
+          pricePWad = previewPWad;
+        }
       }
     }
-  } catch (caught) {
-    if (formatTxError(caught).includes("0xb24d9e1b")) {
-      return { aprText: "—", unavailable: true };
-    }
+  } catch (_caught) {
+    // Some valid pool states (especially thin liquidity / rounding edges) can revert on preview.
+    // For the maturity card, fall back to reserve-implied APR instead of hard-disabling the market.
   }
 
-  const pWad =
-    (toWad(params.poolBaseBalance, params.baseDecimals) * WAD) /
-    toWad(params.poolFyBalance, params.fyDecimals);
+  const aprWad = aprFromPriceWad(pricePWad, params.timeRemaining);
+  if (aprWad !== null && aprWad > MAX_REASONABLE_APR_WAD) {
+    return { aprText: "—", unavailable: false };
+  }
   return {
-    aprText: formatAprPercent(aprFromPriceWad(pWad, params.timeRemaining)),
+    aprText: formatAprPercent(aprWad),
     unavailable: false,
   };
 }
 
+function getLendPoolConfig(token: TokenOption["id"]) {
+  if (token === "cNGN") {
+    return {
+      client: basePublicClient,
+      poolAddress: BASE_CNGN_POOL.poolAddress as Address,
+    };
+  }
+  return {
+    client: publicClient,
+    poolAddress: CELO_YIELD_POOL.poolAddress as Address,
+  };
+}
+
+async function loadLendMaturityOption(params: {
+  token: TokenOption["id"];
+}): Promise<MaturityOption> {
+  const { client, poolAddress } = getLendPoolConfig(params.token);
+
+  const [baseToken, fyToken, maturity] = await client.multicall({
+    allowFailure: false,
+    contracts: [
+      { abi: poolAbi, address: poolAddress, functionName: "baseToken" },
+      { abi: poolAbi, address: poolAddress, functionName: "fyToken" },
+      { abi: poolAbi, address: poolAddress, functionName: "maturity" },
+    ],
+  });
+
+  const [baseDecimalsRaw, fyDecimalsRaw, cache, supply] = await client.multicall({
+    allowFailure: false,
+    contracts: [
+      { abi: erc20Abi, address: baseToken, functionName: "decimals" },
+      { abi: erc20Abi, address: fyToken, functionName: "decimals" },
+      { abi: poolAbi, address: poolAddress, functionName: "getCache" },
+      { abi: poolAbi, address: poolAddress, functionName: "totalSupply" },
+    ],
+  });
+  const [poolBaseCached, poolFyCachedVirtual] = cache;
+  const realFyCached = poolFyCachedVirtual - supply;
+
+  const baseDecimals = Number(baseDecimalsRaw);
+  const fyDecimals = Number(fyDecimalsRaw);
+  const maturitySeconds = Number(maturity);
+  const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
+  const timeRemaining = BigInt(maturitySeconds) - nowSeconds;
+
+  const aprResult = await fetchLendAprText({
+    baseDecimals,
+    fyDecimals,
+    poolBaseCached,
+    poolFyCachedVirtual,
+    previewSellBase: (baseIn) =>
+      client.readContract({
+        abi: poolAbi,
+        address: poolAddress,
+        args: [baseIn],
+        functionName: "sellBasePreview",
+      }),
+    realFyCached,
+    timeRemaining,
+  });
+
+  return {
+    accent: "lime",
+    aprText: aprResult.aprText,
+    dateLabel: formatMaturityDateLabel(maturitySeconds),
+    disabled: aprResult.unavailable,
+    disabledReason: aprResult.unavailable
+      ? "Pool not bootstrapped yet (no real fy reserves in cache)."
+      : undefined,
+    id: `pool:${maturitySeconds}`,
+  };
+}
+
 function useLendMaturityOptions(token: TokenOption["id"]): MaturityOption[] {
-  const poolReads = usePoolReads();
-  const { baseDecimals, fyDecimals, loading, maturity, poolBaseBalance, poolFyBalance } = poolReads;
-  const refetchRef = useRef(poolReads.refetch);
+  const [refreshIndex, setRefreshIndex] = useState(0);
+  const [options, setOptions] = useState<MaturityOption[]>([]);
 
   useEffect(() => {
-    refetchRef.current = poolReads.refetch;
-  }, [poolReads.refetch]);
-
-  const [options, setOptions] = useState<MaturityOption[]>(() =>
-    token === "KESm" ? [{ accent: "lime", aprText: "—", dateLabel: "—", id: "loading" }] : []
-  );
-
-  useEffect(() => {
-    if (token !== "KESm") {
+    if (token !== "KESm" && token !== "cNGN") {
       setOptions([]);
       return;
     }
 
+    const intervalMs = token === "cNGN" ? 30_000 : 15_000;
     const intervalId = setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState !== "visible") {
         return;
       }
-      refetchRef.current();
-    }, 15_000);
+      setRefreshIndex((value) => value + 1);
+    }, intervalMs);
 
     return () => clearInterval(intervalId);
   }, [token]);
 
   useEffect(() => {
     let cancelled = false;
-
-    if (token !== "KESm") {
+    void refreshIndex;
+    if (token !== "KESm" && token !== "cNGN") {
       setOptions([]);
       return () => {
         cancelled = true;
       };
     }
 
-    if (loading) {
-      setOptions([{ accent: "lime", aprText: "—", dateLabel: "—", id: "loading" }]);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    if (
-      maturity === null ||
-      !Number.isFinite(maturity) ||
-      poolBaseBalance === null ||
-      poolFyBalance === null ||
-      baseDecimals === null ||
-      fyDecimals === null
-    ) {
-      setOptions([{ accent: "lime", aprText: "—", dateLabel: "—", id: "error" }]);
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    const maturitySeconds = maturity;
-    const nowSeconds = BigInt(Math.floor(Date.now() / 1000));
-    const timeRemaining = BigInt(maturitySeconds) - nowSeconds;
-
+    setOptions([{ accent: "lime", aprText: "—", dateLabel: "—", id: "loading" }]);
     void (async () => {
-      const aprResult = await fetchLendAprText({
-        baseDecimals,
-        fyDecimals,
-        poolBaseBalance,
-        poolFyBalance,
-        timeRemaining,
-      });
-
-      if (cancelled) {
-        return;
+      try {
+        const option = await loadLendMaturityOption({ token });
+        if (!cancelled) {
+          setOptions([option]);
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setOptions([
+            {
+              accent: "lime",
+              aprText: "—",
+              dateLabel: "—",
+              disabled: true,
+              disabledReason: formatRpcError(caught),
+              id: "error",
+            },
+          ]);
+        }
       }
-
-      setOptions([
-        {
-          accent: "lime",
-          aprText: aprResult.aprText,
-          dateLabel: formatMaturityDateLabel(maturitySeconds),
-          disabled: aprResult.unavailable,
-          disabledReason: aprResult.unavailable
-            ? "Pool currently rejects lend trades for this maturity."
-            : undefined,
-          id: `pool:${maturitySeconds}`,
-        },
-      ]);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [baseDecimals, fyDecimals, loading, maturity, poolBaseBalance, poolFyBalance, token]);
+  }, [token, refreshIndex]);
 
   return options;
 }
