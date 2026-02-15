@@ -74,24 +74,6 @@ type BorrowMarket = {
   ilkId: Hex;
 };
 
-type AprDiagnostics = {
-  loading: boolean;
-  error: string | null;
-  poolBaseToken: Address | null;
-  poolFyToken: Address | null;
-  expectedBaseToken: Address;
-  expectedFyToken: Address;
-  baseDecimals: number | null;
-  fyDecimals: number | null;
-  baseBalance: bigint | null;
-  fyBalance: bigint | null;
-  previewBaseIn: bigint | null;
-  previewFyOut: bigint | null;
-  reservePWad: bigint | null;
-  previewPWad: bigint | null;
-  previewError: string | null;
-};
-
 const TOKEN_ICON_SRC = {
   aUSDC: "/assets/usdc.svg",
   BRZ: "/assets/brz.svg",
@@ -183,169 +165,6 @@ function getMarketForToken(token: TokenOption["id"]): BorrowMarket | null {
     };
   }
   return null;
-}
-
-function shortAddress(value: Address | null) {
-  if (!value) {
-    return "—";
-  }
-  return `${value.slice(0, 8)}…${value.slice(-6)}`;
-}
-
-function renderMatch(actual: Address | null, expected: Address) {
-  if (!actual) {
-    return "—";
-  }
-  return actual.toLowerCase() === expected.toLowerCase() ? "yes" : "no";
-}
-
-function formatRatioWad(value: bigint | null) {
-  if (value === null) {
-    return "—";
-  }
-  return formatUnits(value, 18);
-}
-
-function formatRpcError(caught: unknown) {
-  const message = caught instanceof Error ? caught.message : String(caught ?? "");
-  // Viem errors often include the full request body; keep this human-sized.
-  if (message.includes("Status: 429") || message.includes("HTTP request failed. Status: 429")) {
-    return "RPC rate limited (HTTP 429). Set NEXT_PUBLIC_BASE_RPC_URL to a dedicated Base RPC.";
-  }
-  if (message.includes("HTTP request failed")) {
-    return "RPC request failed. Try again or switch RPC.";
-  }
-  return message || "Failed to load APR diagnostics.";
-}
-
-function useAprDiagnostics(
-  market: BorrowMarket | null,
-  token: TokenOption["id"],
-  enabled: boolean
-) {
-  const [state, setState] = useState<AprDiagnostics | null>(null);
-
-  useEffect(() => {
-    if (!(enabled && market) || (token !== "KESm" && token !== "cNGN")) {
-      setState(null);
-      return;
-    }
-
-    let cancelled = false;
-    setState({
-      baseBalance: null,
-      baseDecimals: null,
-      error: null,
-      expectedBaseToken:
-        token === "cNGN"
-          ? (BORROW_CONFIG.tokens.cNgn as Address)
-          : (BORROW_CONFIG.tokens.kesm as Address),
-      expectedFyToken:
-        token === "cNGN"
-          ? (BORROW_CONFIG.tokens.fycNgn as Address)
-          : (BORROW_CONFIG.tokens.fyKesm as Address),
-      fyBalance: null,
-      fyDecimals: null,
-      loading: true,
-      poolBaseToken: null,
-      poolFyToken: null,
-      previewBaseIn: null,
-      previewError: null,
-      previewFyOut: null,
-      previewPWad: null,
-      reservePWad: null,
-    });
-
-    // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: diagnostics probe aggregates multiple onchain checks.
-    void (async () => {
-      try {
-        const client = getPublicClient(market.chainId);
-        const [poolBaseToken, poolFyToken, baseBalance, fyBalance] = await client.multicall({
-          allowFailure: false,
-          contracts: [
-            { abi: poolAbi, address: market.poolAddress, functionName: "baseToken" },
-            { abi: poolAbi, address: market.poolAddress, functionName: "fyToken" },
-            { abi: poolAbi, address: market.poolAddress, functionName: "getBaseBalance" },
-            { abi: poolAbi, address: market.poolAddress, functionName: "getFYTokenBalance" },
-          ],
-        });
-
-        const [baseDecimalsRaw, fyDecimalsRaw] = await client.multicall({
-          allowFailure: false,
-          contracts: [
-            { abi: erc20Abi, address: poolBaseToken, functionName: "decimals" },
-            { abi: erc20Abi, address: poolFyToken, functionName: "decimals" },
-          ],
-        });
-
-        const baseDecimals = Number(baseDecimalsRaw);
-        const fyDecimals = Number(fyDecimalsRaw);
-        const previewBaseIn = 10n ** BigInt(baseDecimals) / 1000n || 1n;
-
-        let previewFyOut: bigint | null = null;
-        let previewError: string | null = null;
-        try {
-          previewFyOut = await client.readContract({
-            abi: poolAbi,
-            address: market.poolAddress,
-            args: [previewBaseIn],
-            functionName: "sellBasePreview",
-          });
-        } catch (caught) {
-          previewError = getRevertSelector(caught);
-        }
-
-        const reservePWad =
-          fyBalance > 0n
-            ? (toWad(baseBalance, baseDecimals) * WAD) / toWad(fyBalance, fyDecimals)
-            : null;
-        const previewPWad =
-          previewFyOut && previewFyOut > 0n
-            ? (toWad(previewBaseIn, baseDecimals) * WAD) / toWad(previewFyOut, fyDecimals)
-            : null;
-
-        if (!cancelled) {
-          setState({
-            baseBalance,
-            baseDecimals,
-            error: null,
-            expectedBaseToken:
-              token === "cNGN"
-                ? (BORROW_CONFIG.tokens.cNgn as Address)
-                : (BORROW_CONFIG.tokens.kesm as Address),
-            expectedFyToken:
-              token === "cNGN"
-                ? (BORROW_CONFIG.tokens.fycNgn as Address)
-                : (BORROW_CONFIG.tokens.fyKesm as Address),
-            fyBalance,
-            fyDecimals,
-            loading: false,
-            poolBaseToken,
-            poolFyToken,
-            previewBaseIn,
-            previewError,
-            previewFyOut,
-            previewPWad,
-            reservePWad,
-          });
-        }
-      } catch (caught) {
-        if (!cancelled) {
-          setState((prev) => ({
-            ...(prev as AprDiagnostics),
-            error: formatRpcError(caught),
-            loading: false,
-          }));
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, market, token]);
-
-  return state;
 }
 
 function formatMaturityDateLabel(maturitySeconds: number) {
@@ -1580,8 +1399,6 @@ function BorrowStepView(params: {
   selectedMaturityId: string;
   onSelectMaturity: (id: string) => void;
   maturityOptions: MaturityOption[];
-  diagnostics: AprDiagnostics | null;
-  onDiagnosticsToggle: (open: boolean) => void;
   canProceed: boolean;
   borrowStepError: string | null;
   onNext: () => void;
@@ -1611,51 +1428,6 @@ function BorrowStepView(params: {
         selectedMaturityId={params.selectedMaturityId}
         tokenLabel={params.token}
       />
-
-      <details
-        className="mt-4 rounded-2xl border border-numo-border bg-white px-4 py-3 text-numo-muted text-xs"
-        onToggle={(event) =>
-          params.onDiagnosticsToggle((event.currentTarget as HTMLDetailsElement).open)
-        }
-      >
-        <summary className="cursor-pointer select-none text-numo-ink">APR diagnostics</summary>
-        {params.diagnostics ? (
-          <div className="mt-2 grid gap-1">
-            <div>loading: {params.diagnostics.loading ? "yes" : "no"}</div>
-            <div>error: {params.diagnostics.error ?? "—"}</div>
-            <div>
-              pool.baseToken: {shortAddress(params.diagnostics.poolBaseToken)} | expected:{" "}
-              {shortAddress(params.diagnostics.expectedBaseToken)} | match:{" "}
-              {renderMatch(params.diagnostics.poolBaseToken, params.diagnostics.expectedBaseToken)}
-            </div>
-            <div>
-              pool.fyToken: {shortAddress(params.diagnostics.poolFyToken)} | expected:{" "}
-              {shortAddress(params.diagnostics.expectedFyToken)} | match:{" "}
-              {renderMatch(params.diagnostics.poolFyToken, params.diagnostics.expectedFyToken)}
-            </div>
-            <div>
-              getBaseBalance / getFYTokenBalance:{" "}
-              {params.diagnostics.baseBalance?.toString() ?? "—"} /{" "}
-              {params.diagnostics.fyBalance?.toString() ?? "—"}
-            </div>
-            <div>
-              baseDecimals / fyDecimals: {params.diagnostics.baseDecimals ?? "—"} /{" "}
-              {params.diagnostics.fyDecimals ?? "—"}
-            </div>
-            <div>
-              sellBasePreview({params.diagnostics.previewBaseIn?.toString() ?? "—"}) fyOut:{" "}
-              {params.diagnostics.previewFyOut?.toString() ?? "—"} (revert:{" "}
-              {params.diagnostics.previewError ?? "none"})
-            </div>
-            <div>
-              reservePrice(base/fy): {formatRatioWad(params.diagnostics.reservePWad)} |
-              previewPrice: {formatRatioWad(params.diagnostics.previewPWad)}
-            </div>
-          </div>
-        ) : (
-          <div className="mt-2">No diagnostics for this token yet.</div>
-        )}
-      </details>
 
       <SubmitSection
         canContinue={params.canProceed}
@@ -1841,7 +1613,7 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
   const [borrowInput, setBorrowInput] = useState("");
   const [receiveMode, setReceiveMode] = useState<BorrowReceiveMode>("KESM_NOW");
   const [quoteFailureReason, setQuoteFailureReason] = useState<QuoteFailureReason | null>(null);
-  const [token, setToken] = useState<TokenOption["id"]>("KESm");
+  const [token, setToken] = useState<TokenOption["id"]>("cNGN");
   const filteredTokens = useMemo(
     () =>
       TOKENS.filter((option) => {
@@ -1864,7 +1636,7 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
   const [txStatus, setTxStatus] = useState<string | null>(null);
   const [txHash, setTxHash] = useState<Hex | null>(null);
   const [txOutcome, setTxOutcome] = useState<TxOutcome | null>(null);
-  const defaultMarket = getMarketForToken("KESm");
+  const defaultMarket = getMarketForToken("cNGN");
   if (!defaultMarket) {
     throw new Error("Default borrow market is missing.");
   }
@@ -1954,11 +1726,9 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
     setCollateralMenuOpen(false)
   );
 
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const borrowStepError = getBorrowStepError(token, parsedBorrowKes);
   const selectedMaturity =
     maturityOptions.find((option) => option.id === selectedMaturityId) ?? maturityOptions[0];
-  const diagnostics = useAprDiagnostics(activeMarket, token, diagnosticsOpen);
   const maturitySelectionError =
     !selectedMaturityId || selectedMaturityId === "loading" || selectedMaturityId === "error"
       ? "Loading maturity…"
@@ -2015,10 +1785,8 @@ export function BorrowFixedRate({ className, selectedChain }: BorrowFixedRatePro
               borrowInput={borrowInput}
               borrowStepError={borrowNextError}
               canProceed={canProceed}
-              diagnostics={diagnostics}
               maturityOptions={maturityOptions}
               onBorrowChange={(value) => setBorrowInput(value)}
-              onDiagnosticsToggle={setDiagnosticsOpen}
               onNext={() => {
                 setQuoteFailureReason(null);
                 setTxOutcome(null);

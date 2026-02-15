@@ -6,18 +6,19 @@ import type { Dispatch, RefObject, SetStateAction } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Address, Hex } from "viem";
 import { decodeEventLog, formatUnits, parseUnits } from "viem";
-import { celo } from "viem/chains";
+import { base, celo } from "viem/chains";
 import { erc20Abi } from "@/lib/abi/erc20";
 import { poolAbi } from "@/lib/abi/pool";
 import { publicClient as basePublicClient } from "@/lib/baseClients";
 import { publicClient } from "@/lib/celoClients";
 import { cn } from "@/lib/cn";
 import { getRevertSelector } from "@/lib/get-revert-selector";
-import { usePoolReads } from "@/lib/usePoolReads";
 import { usePrivyAddress } from "@/lib/usePrivyAddress";
 import { usePrivyWalletClient } from "@/lib/usePrivyWalletClient";
 import { aprFromPriceWad, formatAprPercent, WAD } from "@/src/apr";
 import { BASE_CNGN_POOL, CELO_YIELD_POOL } from "@/src/poolInfo";
+
+type AnyPublicClient = typeof publicClient | typeof basePublicClient;
 
 type LendFixedRateProps = {
   className?: string;
@@ -211,13 +212,153 @@ async function fetchLendAprText(params: {
 function getLendPoolConfig(token: TokenOption["id"]) {
   if (token === "cNGN") {
     return {
+      chain: base,
+      chainId: base.id,
       client: basePublicClient,
       poolAddress: BASE_CNGN_POOL.poolAddress as Address,
     };
   }
   return {
+    chain: celo,
+    chainId: celo.id,
     client: publicClient,
     poolAddress: CELO_YIELD_POOL.poolAddress as Address,
+  };
+}
+
+type UseLendPoolReadsResult = {
+  loading: boolean;
+  error: Error | null;
+  baseToken: Address | null;
+  fyToken: Address | null;
+  poolBaseBalance: bigint | null;
+  poolFyBalance: bigint | null;
+  maturity: number | null;
+  baseDecimals: number | null;
+  fyDecimals: number | null;
+  fySymbol: string | null;
+  userFyBal: bigint | null;
+  refetch: () => void;
+};
+
+async function readLendPoolSnapshot(params: {
+  tokenId: TokenOption["id"];
+  userAddress?: Address;
+}): Promise<{
+  baseToken: Address;
+  fyToken: Address;
+  baseBalance: bigint;
+  fyBalance: bigint;
+  maturity: number;
+  baseDecimals: number;
+  fyDecimals: number;
+  fySymbol: string;
+  userFyBal: bigint | null;
+}> {
+  const { client, poolAddress } = getLendPoolConfig(params.tokenId);
+
+  const [baseToken, fyToken, maturity, baseBalance, fyBalance] = await client.multicall({
+    allowFailure: false,
+    contracts: [
+      { abi: poolAbi, address: poolAddress, functionName: "baseToken" },
+      { abi: poolAbi, address: poolAddress, functionName: "fyToken" },
+      { abi: poolAbi, address: poolAddress, functionName: "maturity" },
+      { abi: poolAbi, address: poolAddress, functionName: "getBaseBalance" },
+      { abi: poolAbi, address: poolAddress, functionName: "getFYTokenBalance" },
+    ],
+  });
+
+  const [baseDecimalsRaw, fySymbol, fyDecimalsRaw] = await client.multicall({
+    allowFailure: false,
+    contracts: [
+      { abi: erc20Abi, address: baseToken, functionName: "decimals" },
+      { abi: erc20Abi, address: fyToken, functionName: "symbol" },
+      { abi: erc20Abi, address: fyToken, functionName: "decimals" },
+    ],
+  });
+
+  let userFyBal: bigint | null = null;
+  if (params.userAddress) {
+    try {
+      userFyBal = await client.readContract({
+        abi: erc20Abi,
+        address: fyToken,
+        args: [params.userAddress],
+        functionName: "balanceOf",
+      });
+    } catch {
+      userFyBal = null;
+    }
+  }
+
+  return {
+    baseBalance,
+    baseDecimals: Number(baseDecimalsRaw),
+    baseToken,
+    fyBalance,
+    fyDecimals: Number(fyDecimalsRaw),
+    fySymbol,
+    fyToken,
+    maturity: Number(maturity),
+    userFyBal,
+  };
+}
+
+function useLendPoolReads(params: {
+  tokenId: TokenOption["id"];
+  userAddress?: Address;
+}): UseLendPoolReadsResult {
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+  const [snapshot, setSnapshot] = useState<Awaited<ReturnType<typeof readLendPoolSnapshot>> | null>(
+    null
+  );
+  const [refreshIndex, setRefreshIndex] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    void refreshIndex;
+
+    setLoading(true);
+    setError(null);
+
+    void readLendPoolSnapshot({ tokenId: params.tokenId, userAddress: params.userAddress })
+      .then((next) => {
+        if (cancelled) {
+          return;
+        }
+        setSnapshot(next);
+      })
+      .catch((caught) => {
+        if (cancelled) {
+          return;
+        }
+        setError(caught instanceof Error ? caught : new Error("Failed to load pool data"));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [params.tokenId, params.userAddress, refreshIndex]);
+
+  return {
+    baseDecimals: snapshot?.baseDecimals ?? null,
+    baseToken: snapshot?.baseToken ?? null,
+    error,
+    fyDecimals: snapshot?.fyDecimals ?? null,
+    fySymbol: snapshot?.fySymbol ?? null,
+    fyToken: snapshot?.fyToken ?? null,
+    loading,
+    maturity: snapshot?.maturity ?? null,
+    poolBaseBalance: snapshot?.baseBalance ?? null,
+    poolFyBalance: snapshot?.fyBalance ?? null,
+    refetch: () => setRefreshIndex((value) => value + 1),
+    userFyBal: snapshot?.userFyBal ?? null,
   };
 }
 
@@ -428,10 +569,14 @@ function formatUnitsTruncated(value: bigint, decimals: number, displayDecimals: 
 
 async function handleLendClick(params: {
   amount: string;
+  chainId: number;
   baseDecimals: number | null;
   baseToken: Address | null;
   canContinue: boolean;
+  isBase: boolean;
   isCelo: boolean;
+  publicClient: AnyPublicClient;
+  poolAddress: Address;
   tokenId: TokenOption["id"];
   userAddress: Address | undefined;
   walletClient: ReturnType<typeof usePrivyWalletClient>["walletClient"];
@@ -457,6 +602,7 @@ async function handleLendClick(params: {
       baseDecimals: params.baseDecimals,
       baseToken: params.baseToken,
       canContinue: params.canContinue,
+      isBase: params.isBase,
       isCelo: params.isCelo,
       tokenId: params.tokenId,
       userAddress: params.userAddress,
@@ -475,6 +621,9 @@ async function handleLendClick(params: {
       account: result.context.account,
       amountInBase: result.context.amountInBase,
       baseToken: result.context.baseToken,
+      chainId: params.chainId,
+      poolAddress: params.poolAddress,
+      publicClient: params.publicClient,
       onPhase: params.setTxPhase,
       walletClient: result.context.walletClient,
     });
@@ -489,7 +638,7 @@ async function handleLendClick(params: {
         });
         params.onConfirmedFyReceived(received);
 
-        const nextFyBal = await publicClient.readContract({
+        const nextFyBal = await params.publicClient.readContract({
           abi: erc20Abi,
           address: params.fyToken,
           args: [result.context.account],
@@ -588,6 +737,7 @@ function getLendValidationContext(params: {
   baseDecimals: number | null;
   baseToken: Address | null;
   canContinue: boolean;
+  isBase: boolean;
   isCelo: boolean;
   tokenId: TokenOption["id"];
   userAddress: Address | undefined;
@@ -596,13 +746,16 @@ function getLendValidationContext(params: {
   if (!(params.userAddress && params.walletClient)) {
     return { error: "Connect a wallet to continue." };
   }
-  if (!params.isCelo) {
+  if (params.tokenId === "cNGN" && !params.isBase) {
+    return { error: "Please switch your wallet to the Base network." };
+  }
+  if (params.tokenId === "KESm" && !params.isCelo) {
     return { error: "Please switch your wallet to the Celo network." };
   }
   if (!params.canContinue) {
     return { error: "Enter an amount and select a maturity." };
   }
-  if (params.tokenId !== "KESm") {
+  if (params.tokenId !== "KESm" && params.tokenId !== "cNGN") {
     return { error: "Lending this asset is not supported yet." };
   }
   if (params.baseDecimals === null || params.baseToken === null) {
@@ -638,6 +791,9 @@ async function executeLendBaseToFy(params: {
   account: Address;
   amountInBase: bigint;
   baseToken: Address;
+  chainId: number;
+  poolAddress: Address;
+  publicClient: AnyPublicClient;
   onPhase: (phase: LendTxPhase) => void;
   walletClient: NonNullable<ReturnType<typeof usePrivyWalletClient>["walletClient"]>;
 }): Promise<{
@@ -647,9 +803,9 @@ async function executeLendBaseToFy(params: {
   transferHash: Hex;
 }> {
   // Preflight quote: if this reverts (eg NegativeInterestRatesNotAllowed), we abort before wallet prompts.
-  const fyOut = await publicClient.readContract({
+  const fyOut = await params.publicClient.readContract({
     abi: poolAbi,
-    address: CELO_YIELD_POOL.poolAddress as Address,
+    address: params.poolAddress,
     args: [params.amountInBase],
     functionName: "sellBasePreview",
   });
@@ -662,8 +818,8 @@ async function executeLendBaseToFy(params: {
       abi: erc20Abi,
       account: params.account,
       address: params.baseToken,
-      args: [CELO_YIELD_POOL.poolAddress as Address, params.amountInBase],
-      chain: celo,
+      args: [params.poolAddress, params.amountInBase],
+      chain: params.chainId === base.id ? base : celo,
       functionName: "transfer",
     }),
     WALLET_TIMEOUT_MS,
@@ -671,16 +827,16 @@ async function executeLendBaseToFy(params: {
   );
 
   params.onPhase("transfer_pending");
-  await publicClient.waitForTransactionReceipt({ hash: transferHash });
+  await params.publicClient.waitForTransactionReceipt({ hash: transferHash });
 
   params.onPhase("swap_sign");
   const swapHash = await withTimeout(
     params.walletClient.writeContract({
       abi: poolAbi,
       account: params.account,
-      address: CELO_YIELD_POOL.poolAddress as Address,
+      address: params.poolAddress,
       args: [params.account, minFyOut],
-      chain: celo,
+      chain: params.chainId === base.id ? base : celo,
       functionName: "sellBase",
     }),
     WALLET_TIMEOUT_MS,
@@ -688,7 +844,7 @@ async function executeLendBaseToFy(params: {
   );
 
   params.onPhase("swap_pending");
-  const swapReceipt = await publicClient.waitForTransactionReceipt({ hash: swapHash });
+  const swapReceipt = await params.publicClient.waitForTransactionReceipt({ hash: swapHash });
 
   return {
     swapBlockNumber: swapReceipt.blockNumber,
@@ -711,7 +867,7 @@ function computeRedeemableAtMaturity(params: {
   tokenLabel: string;
   maturityOption: MaturityOption | undefined;
 }) {
-  if (params.tokenId !== "KESm") {
+  if (params.tokenId !== "KESm" && params.tokenId !== "cNGN") {
     return null;
   }
   if (
@@ -1394,6 +1550,9 @@ function LendConfirmStep(props: {
 
 export function LendFixedRate({ className, selectedChain }: LendFixedRateProps) {
   const userAddress = usePrivyAddress();
+  const [amount, setAmount] = useState("");
+  const [token, setToken] = useState<TokenOption["id"]>("cNGN");
+  const { isBase, isCelo, walletClient } = usePrivyWalletClient();
   const {
     baseDecimals,
     baseToken,
@@ -1404,10 +1563,7 @@ export function LendFixedRate({ className, selectedChain }: LendFixedRateProps) 
     poolFyBalance,
     refetch,
     userFyBal,
-  } = usePoolReads(userAddress);
-  const { isCelo, walletClient } = usePrivyWalletClient();
-  const [amount, setAmount] = useState("");
-  const [token, setToken] = useState<TokenOption["id"]>("KESm");
+  } = useLendPoolReads({ tokenId: token, userAddress });
   const filteredTokens = useMemo(
     () =>
       TOKENS.filter((option) => {
@@ -1439,7 +1595,7 @@ export function LendFixedRate({ className, selectedChain }: LendFixedRateProps) 
     maturityOptions.find((option) => option.id === selectedMaturityId) ?? maturityOptions[0];
 
   const canContinue =
-    token === "KESm" &&
+    (token === "KESm" || token === "cNGN") &&
     isPositiveAmount(amount) &&
     Boolean(selectedMaturity?.id) &&
     selectedMaturity?.id !== "loading" &&
@@ -1471,13 +1627,18 @@ export function LendFixedRate({ className, selectedChain }: LendFixedRateProps) 
   });
 
   const onLendConfirm = () => {
+    const { chainId, client, poolAddress } = getLendPoolConfig(token);
     void handleLendClick({
       amount,
+      chainId,
       baseDecimals,
       baseToken,
       canContinue,
       fyToken: fyToken ?? null,
+      isBase,
       isCelo,
+      poolAddress,
+      publicClient: client,
       onConfirmedFyBalance: (balance) => setConfirmedFyBalance(balance),
       onConfirmedFyReceived: (received) => setConfirmedFyReceived(received),
       onResetConfirmedFyBalance: () => setConfirmedFyBalance(null),
