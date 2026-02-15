@@ -1492,7 +1492,7 @@ function LendTransactionConfirmation(props: {
                 onClick={props.onReset}
                 type="button"
               >
-                Lend some more
+                Close
               </button>
             </>
           ) : (
